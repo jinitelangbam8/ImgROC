@@ -1,5 +1,5 @@
 {
-  "name": "VisionAI - Intelligent Object Detection",
+  "name": "ImgREC",
   "description": "A professional AI-powered image recognition and object detection system with real-time analysis, interactive dashboard, and prediction history.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["image_processing", "object_detection", "ocr"]

@@ -25,7 +25,7 @@ async function startServer() {
     res.json({ 
       status: "ok", 
       timestamp: new Date().toISOString(),
-      service: "VisionAI Engine"
+      service: "ImgREC Engine"
     });
   });
 
@@ -48,7 +48,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 VisionAI Kernel active at http://localhost:${PORT}`);
+    console.log(`🚀 ImgREC Kernel active at http://localhost:${PORT}`);
   });
 }
 

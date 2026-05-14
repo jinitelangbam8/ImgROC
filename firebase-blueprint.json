@@ -1,0 +1,22 @@
+{
+  "entities": {
+    "Scan": {
+      "title": "Scan History",
+      "description": "Historical record of an image analysis session",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "imageUrl": { "type": "string" },
+        "analysis": { "type": "object" }
+      },
+      "required": ["userId", "timestamp", "imageUrl", "analysis"]
+    }
+  },
+  "firestore": {
+    "/scans/{scanId}": {
+      "schema": "Scan",
+      "description": "Collection of user scan history records"
+    }
+  }
+}

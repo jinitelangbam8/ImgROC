@@ -1,6 +1,6 @@
-# Customizing VisionAI Intelligence
+# Customizing ImgREC Intelligence
 
-VisionAI is built with flexibility in mind. You can easily modify the AI's behavior by adjusting the orchestration logic in `src/services/geminiService.ts`.
+ImgREC is built with flexibility in mind. You can easily modify the AI's behavior by adjusting the orchestration logic in `src/services/geminiService.ts`.
 
 ## 🧠 Modifying the Prompt
 

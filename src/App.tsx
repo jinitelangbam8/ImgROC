@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { Upload, Camera, ImageIcon, History, Layers, Info, Sun, Moon, Database, Settings, LayoutDashboard, BrainCircuit, ScanSearch } from "lucide-react";
+import { Upload, Camera, ImageIcon, History, Layers, Info, Sun, Moon, Database, Settings, LayoutDashboard, BrainCircuit, ScanSearch, ExternalLink, Globe, User, LogOut, BookOpen, ShieldCheck, Zap, Cpu, Volume2, Languages } from "lucide-react";
 import { useDropzone } from "react-dropzone";
 import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
@@ -12,9 +12,29 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import imageCompression from "browser-image-compression";
 import { Toaster, toast } from "sonner";
-import { analyzeImage, VisionAnalysis } from "@/services/geminiService";
+import { analyzeImage, VisionAnalysis, generateSpeech } from "@/services/geminiService";
 import { cn } from "@/lib/utils";
 import confetti from "canvas-confetti";
+import { auth, signInWithGoogle, logout, db } from "@/lib/firebase";
+import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
+import { collection, query, where, getDocs, addDoc, orderBy, limit, Timestamp } from "firebase/firestore";
+
+// Error reporting enum
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: any;
+}
 
 // Types
 interface ScanHistory {
@@ -27,11 +47,77 @@ interface ScanHistory {
 export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [currentImage, setCurrentImage] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<VisionAnalysis | null>(null);
   const [history, setHistory] = useState<ScanHistory[]>([]);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showCamera, setShowCamera] = useState(false);
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+
+  const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
+    const errInfo: FirestoreErrorInfo = {
+      error: error instanceof Error ? error.message : String(error),
+      authInfo: {
+        userId: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+      },
+      operationType,
+      path
+    };
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+    throw new Error(JSON.stringify(errInfo));
+  };
+
+  // Auth listener & History fetcher
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        try {
+          const q = query(
+            collection(db, "scans"),
+            where("userId", "==", currentUser.uid),
+            orderBy("timestamp", "desc"),
+            limit(20)
+          );
+          const querySnapshot = await getDocs(q);
+          const firestoreHistory: ScanHistory[] = querySnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          } as ScanHistory));
+          setHistory(firestoreHistory);
+        } catch (error) {
+          console.error("Firestore fetch error:", error);
+          // Fallback to local storage if firestore fails
+          const saved = localStorage.getItem("vision_history");
+          if (saved) setHistory(JSON.parse(saved));
+        }
+      } else {
+        const saved = localStorage.getItem("vision_history");
+        if (saved) setHistory(JSON.parse(saved));
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithGoogle();
+      toast.success("Identity verified. Access granted.");
+    } catch (error) {
+      toast.error("Authentication failed.");
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      toast.info("Session terminated.");
+    } catch (error) {
+      toast.error("Logout failed.");
+    }
+  };
 
   // Theme application
   useEffect(() => {
@@ -41,12 +127,28 @@ export default function App() {
     document.documentElement.classList.toggle("dark", isDarkMode);
   }, [isDarkMode]);
 
-  const speakResult = (text: string) => {
-    // Using Web Speech API for clean, robust results without API overhead
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9;
-    utterance.pitch = 1.1;
-    window.speechSynthesis.speak(utterance);
+  const speakResult = async (text: string) => {
+    if (isSpeaking) return;
+    
+    setIsSpeaking(true);
+    try {
+      const base64Audio = await generateSpeech(text);
+      const audio = new Audio(`data:audio/mp3;base64,${base64Audio}`);
+      audio.onended = () => setIsSpeaking(false);
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        toast.error("Audio playback error");
+      };
+      await audio.play();
+    } catch (error) {
+      console.error("AI Speech failed, falling back to Web Speech API", error);
+      // Fallback to Web Speech API
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.9;
+      utterance.pitch = 1.1;
+      utterance.onend = () => setIsSpeaking(false);
+      window.speechSynthesis.speak(utterance);
+    }
   };
 
   const captureCamera = async () => {
@@ -118,16 +220,30 @@ export default function App() {
       const result = await analyzeImage(compressedBase64, compressedFile.type);
       setAnalysisResult(result);
       
-      const newHistoryItem: ScanHistory = {
-        id: Math.random().toString(36).substr(2, 9),
+      const newHistoryItem: any = {
+        userId: user?.uid || "anonymous",
         timestamp: Date.now(),
         imageUrl: `data:${compressedFile.type};base64,${compressedBase64}`,
         analysis: result
       };
       
+      if (user) {
+        try {
+          const docRef = await addDoc(collection(db, "scans"), newHistoryItem);
+          newHistoryItem.id = docRef.id;
+        } catch (error) {
+          handleFirestoreError(error, OperationType.CREATE, "scans");
+        }
+      } else {
+        newHistoryItem.id = Math.random().toString(36).substr(2, 9);
+      }
+      
       const updatedHistory = [newHistoryItem, ...history.slice(0, 19)];
       setHistory(updatedHistory);
-      localStorage.setItem("vision_history", JSON.stringify(updatedHistory));
+      
+      if (!user) {
+        localStorage.setItem("vision_history", JSON.stringify(updatedHistory));
+      }
       
       confetti({
         particleCount: 100,
@@ -161,12 +277,12 @@ export default function App() {
             <ScanSearch className="h-6 w-6 text-white" />
           </div>
           <h1 className="text-2xl font-black tracking-tighter text-gradient">
-            VISION<span className="opacity-70">AI</span>
+            Img<span className="opacity-70">REC</span>
           </h1>
         </div>
 
-        <nav className="hidden md:flex items-center gap-1 bg-muted/50 p-1 rounded-2xl border border-white/5">
-          {["Dashboard", "History", "System"].map((tab) => (
+        <nav className="hidden lg:flex items-center gap-1 bg-muted/50 p-1 rounded-2xl border border-white/5">
+          {["Dashboard", "History", "Documentation", "System"].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab.toLowerCase() as any)}
@@ -183,6 +299,26 @@ export default function App() {
         </nav>
 
         <div className="flex items-center gap-4">
+          {user ? (
+            <div className="flex items-center gap-3 bg-muted/30 p-1.5 pr-4 rounded-full border border-white/5">
+              <img src={user.photoURL || ""} alt="Avatar" className="w-8 h-8 rounded-full border border-primary/20" />
+              <div className="hidden sm:flex flex-col">
+                <span className="text-[10px] font-black uppercase tracking-tight leading-none truncate max-w-[80px]">{user.displayName}</span>
+                <button onClick={handleLogout} className="text-[8px] font-bold text-muted-foreground hover:text-destructive text-left transition-colors flex items-center gap-1">
+                   SIGNOUT <LogOut className="h-2 w-2" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <Button 
+              onClick={handleLogin} 
+              variant="outline" 
+              className="rounded-full px-6 h-10 text-[10px] font-black uppercase tracking-widest border-primary/20 hover:bg-primary/10 text-primary transition-all"
+            >
+              <User className="mr-2 h-4 w-4" />
+              Access Portal
+            </Button>
+          )}
           <Button 
             variant="ghost" 
             size="icon" 
@@ -191,7 +327,7 @@ export default function App() {
           >
             {isDarkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </Button>
-          <div className="flex flex-col items-end">
+          <div className="hidden sm:flex flex-col items-end">
             <span className="text-[10px] font-black uppercase tracking-widest text-primary">System Status</span>
             <span className="text-xs font-bold text-emerald-500 flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
@@ -270,9 +406,11 @@ export default function App() {
                               Inject visual assets into the matrix for classification and processing.
                             </p>
                           </div>
-                          <Button size="lg" className="rounded-2xl px-10 border-primary/20 bg-primary/10 text-primary font-black hover:bg-primary transition-all hover:text-white glow-primary">
-                            INITIATE SCAN
-                          </Button>
+                          <div className="flex gap-4">
+                            <Button size="lg" className="rounded-2xl px-10 border-primary/20 bg-primary/10 text-primary font-black hover:bg-primary transition-all hover:text-white glow-primary pointer-events-auto">
+                              UPLOAD FILE
+                            </Button>
+                          </div>
                         </div>
                       )}
 
@@ -303,33 +441,99 @@ export default function App() {
                         </div>
                       </div>
                       
-                      <ScrollArea className="h-[250px] pr-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {analysisResult?.objects.map((obj, i) => (
-                            <motion.div 
-                              initial={{ opacity: 0, y: 10 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              transition={{ delay: i * 0.1 }}
-                              key={i} 
-                              className="flex items-center justify-between p-5 bg-white/40 dark:bg-white/5 rounded-3xl border border-white/10 group hover:border-primary/50 transition-all hover:shadow-xl hover:bg-white/60"
-                            >
-                              <div className="flex flex-col gap-1 min-w-0">
-                                <span className="text-[9px] uppercase font-black text-primary tracking-widest font-mono opacity-70">{obj.category}</span>
-                                <span className="font-black text-base truncate">{obj.objectName}</span>
+                      <ScrollArea className="h-[400px] pr-4">
+                        <div className="flex flex-col gap-6">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {analysisResult?.objects.map((obj, i) => (
+                              <motion.div 
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: i * 0.1 }}
+                                key={i} 
+                                className="flex flex-col p-5 bg-white/40 dark:bg-white/5 rounded-3xl border border-white/10 group hover:border-primary/50 transition-all hover:shadow-xl hover:bg-white/60"
+                              >
+                                <div className="flex items-start justify-between min-w-0">
+                                  <div className="flex flex-col gap-1 min-w-0">
+                                    <span className="text-[9px] uppercase font-black text-primary tracking-widest font-mono opacity-70">{obj.category}</span>
+                                    <span className="font-black text-lg truncate leading-tight">{obj.objectName}</span>
+                                  </div>
+                                  <div className="flex flex-col items-end shrink-0">
+                                    <span className="text-primary font-mono font-black text-xl leading-none">
+                                      {(obj.confidence * 100).toFixed(0)}%
+                                    </span>
+                                    <span className="text-[8px] font-bold text-muted-foreground uppercase mt-1">Confidence</span>
+                                  </div>
+                                </div>
+                                {obj.description && (
+                                  <p className="text-xs text-muted-foreground mt-3 leading-relaxed line-clamp-3 group-hover:line-clamp-none transition-all">
+                                    {obj.description}
+                                  </p>
+                                )}
+                                <div className="flex items-center gap-3 mt-4">
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    className="h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider bg-primary/10 text-primary hover:bg-primary hover:text-white transition-all"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      window.open(`https://www.google.com/search?q=${encodeURIComponent(obj.objectName + " " + obj.category)}`, "_blank");
+                                    }}
+                                  >
+                                    <Globe className="h-3 w-3 mr-1.5" />
+                                    Search Detail
+                                  </Button>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    className={cn(
+                                      "h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider bg-secondary/10 text-secondary hover:bg-secondary hover:text-white transition-all",
+                                      isSpeaking && "opacity-50 cursor-wait"
+                                    )}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (obj.description) speakResult(obj.description);
+                                    }}
+                                    disabled={isSpeaking}
+                                  >
+                                    <Volume2 className={cn("h-3 w-3 mr-1.5", isSpeaking && "animate-pulse")} />
+                                    Voice Info
+                                  </Button>
+                                </div>
+                              </motion.div>
+                            ))}
+                            {!analysisResult && !isAnalyzing && (
+                              <div className="col-span-full py-12 text-center opacity-30 flex flex-col items-center gap-4">
+                                <div className="w-12 h-12 rounded-full border-2 border-dashed border-primary animate-spin-slow"></div>
+                                <p className="text-[10px] font-black uppercase tracking-widest">Awaiting Neural Data</p>
                               </div>
-                              <div className="flex flex-col items-end">
-                                <span className="text-primary font-mono font-black text-xl transition-transform group-hover:scale-110">
-                                  {(obj.confidence * 100).toFixed(0)}%
-                                </span>
-                                <span className="text-[8px] font-bold text-muted-foreground uppercase">Confidence</span>
+                            )}
+                          </div>
+
+                          {analysisResult?.sources && analysisResult.sources.length > 0 && (
+                            <motion.div 
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              className="p-6 rounded-3xl glass border border-white/10"
+                            >
+                              <h4 className="text-[10px] font-black uppercase tracking-widest text-primary mb-4 flex items-center gap-2">
+                                <Globe className="h-3 w-3" />
+                                Verified Web Sources
+                              </h4>
+                              <div className="flex flex-wrap gap-2">
+                                {analysisResult.sources.map((source, idx) => (
+                                  <a 
+                                    key={idx}
+                                    href={source.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="px-3 py-1.5 rounded-xl bg-white/20 dark:bg-white/5 border border-white/10 text-[10px] font-bold text-foreground/80 hover:bg-primary/20 hover:border-primary/40 hover:text-primary transition-all flex items-center gap-2"
+                                  >
+                                    <span className="truncate max-w-[150px]">{source.title}</span>
+                                    <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                ))}
                               </div>
                             </motion.div>
-                          ))}
-                          {!analysisResult && !isAnalyzing && (
-                            <div className="col-span-full py-12 text-center opacity-30 flex flex-col items-center gap-4">
-                              <div className="w-12 h-12 rounded-full border-2 border-dashed border-primary animate-spin-slow"></div>
-                              <p className="text-[10px] font-black uppercase tracking-widest">Awaiting Neural Data</p>
-                            </div>
                           )}
                         </div>
                         
@@ -342,7 +546,19 @@ export default function App() {
                             <div className="absolute top-0 right-0 p-2 opacity-20">
                               <Layers className="h-10 w-10 text-primary" />
                             </div>
-                            <h4 className="text-[10px] font-black uppercase tracking-widest text-primary mb-2">Executive Summary</h4>
+                            <h4 className="text-[10px] font-black uppercase tracking-widest text-primary mb-2 flex items-center justify-between">
+                              Executive Summary
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                className="h-6 px-2 rounded-lg text-[8px] font-black uppercase tracking-wider bg-primary/20 text-primary hover:bg-primary hover:text-white transition-all"
+                                onClick={() => speakResult(analysisResult.summary)}
+                                disabled={isSpeaking}
+                              >
+                                <Volume2 className={cn("h-2.5 w-2.5 mr-1", isSpeaking && "animate-pulse")} />
+                                Listen
+                              </Button>
+                            </h4>
                             <p className="text-sm leading-relaxed text-foreground font-medium">{analysisResult.summary}</p>
                           </motion.div>
                         )}
@@ -563,6 +779,115 @@ export default function App() {
             </div>
           </TabsContent>
 
+          <TabsContent value="documentation" className="mt-12 focus-visible:outline-none">
+            <div className="flex flex-col gap-12 max-w-5xl mx-auto pb-20">
+              <div className="space-y-4 text-center">
+                <Badge variant="outline" className="rounded-full px-4 py-1 border-primary/20 bg-primary/5 text-primary font-black uppercase tracking-[0.2em] text-[10px]">Technical Specs</Badge>
+                <h1 className="text-6xl font-black tracking-tighter leading-none text-gradient">System Documentation</h1>
+                <p className="text-muted-foreground text-lg max-w-2xl mx-auto">Complete guide to the ImgREC neural architecture, API integration, and security protocols.</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <Card className="rounded-4xl glass border-white/10 p-8 shadow-xl">
+                  <CardHeader className="p-0 pb-6 flex flex-row items-center gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+                      <Zap className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-xl font-black">Core Engine</CardTitle>
+                      <CardDescription className="text-[10px] font-bold uppercase tracking-widest">Neural Processing</CardDescription>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0 space-y-4">
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      ImgREC utilizes <span className="text-foreground font-bold">Gemini 1.5 Flash</span>, optimized for rapid vision-language reasoning. The engine performs asynchronous multi-modal analysis, extracting feature vectors from visual inputs.
+                    </p>
+                    <ul className="space-y-3">
+                      {[
+                        "Real-time object classification (>98% accuracy)",
+                        "Multilingual OCR with automatic script detection",
+                        "Location/Product grounding with Google Search integration",
+                        "Sub-500ms latency on edge nodes"
+                      ].map((item, i) => (
+                        <li key={i} className="flex items-center gap-3 text-xs font-medium">
+                          <div className="w-1.5 h-1.5 rounded-full bg-primary"></div>
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-4xl glass border-white/10 p-8 shadow-xl">
+                  <CardHeader className="p-0 pb-6 flex flex-row items-center gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-secondary/10 flex items-center justify-center text-secondary">
+                      <ShieldCheck className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-xl font-black">Security Protocol</CardTitle>
+                      <CardDescription className="text-[10px] font-bold uppercase tracking-widest">Access Control</CardDescription>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0 space-y-4">
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      All neural streams are protected via <span className="text-foreground font-bold">Firebase Identity Platform</span>. Data is encrypted at rest using AES-256 and transit via TLS 1.3.
+                    </p>
+                    <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-[10px] font-black uppercase text-secondary">Auth Level</span>
+                        <Badge className="bg-secondary text-white font-black text-[9px] uppercase">Level 4</Badge>
+                      </div>
+                      <Progress value={100} className="h-1 bg-secondary/10" />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-4xl glass border-white/10 p-8 shadow-xl md:col-span-2">
+                  <CardHeader className="p-0 pb-8">
+                    <div className="flex items-center gap-4 mb-2">
+                      <Cpu className="w-5 h-5 text-primary" />
+                      <CardTitle className="text-2xl font-black">Processing Pipeline</CardTitle>
+                    </div>
+                    <CardDescription className="text-[10px] font-bold uppercase tracking-[0.2em]">Operational Workflow</CardDescription>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
+                      {[
+                        { title: "Ingestion", desc: "Binary visual data passed through edge compression filters." },
+                        { title: "Inference", desc: "Gemini-1.5-Flash opt-model executes visual feature extraction." },
+                        { title: "Grounding", desc: "Cross-referencing entities via distributed search indexes." }
+                      ].map((step, i) => (
+                        <div key={i} className="space-y-3 relative z-10">
+                          <span className="text-4xl font-black text-primary/20">0{i+1}</span>
+                          <h5 className="font-black text-lg">{step.title}</h5>
+                          <p className="text-xs text-muted-foreground leading-relaxed">{step.desc}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-4xl bg-slate-900 border-none p-10 md:col-span-2 text-white overflow-hidden relative">
+                  <div className="absolute top-0 right-0 p-10 opacity-5 rotate-12">
+                    <BookOpen className="w-40 h-40" />
+                  </div>
+                  <div className="space-y-6 relative z-10">
+                    <h3 className="text-3xl font-black tracking-tight">API Interface</h3>
+                    <p className="text-white/60 text-sm max-w-xl">Developers can integrate the ImgREC engine into custom applications using our standardized SDK endpoints.</p>
+                    <div className="bg-black/40 rounded-2xl p-6 font-mono text-[11px] text-emerald-400 border border-white/10">
+                      <p className="text-white/40">// Initialize ImgREC SDK</p>
+                      <p>const <span className="text-primary">imgrec</span> = new <span className="text-white">ImgREC</span>({'{'} apiKey: SYNC_KEY {'}'});</p>
+                      <p className="mt-4 text-white/40">// Execute deep analysis</p>
+                      <p>const result = await <span className="text-primary">imgrec</span>.<span className="text-white">analyze</span>(imageBuffer);</p>
+                      <p className="mt-4 text-white/40">// Output results</p>
+                      <p>console.log(result.<span className="text-white">prediction</span>);</p>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+            </div>
+          </TabsContent>
+
           <TabsContent value="system" className="mt-12 focus-visible:outline-none">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
               <Card className="rounded-4xl border-white/10 glass p-8 shadow-xl glow-primary">
@@ -667,7 +992,7 @@ export default function App() {
             <span className="hover:text-secondary transition-colors cursor-pointer">Data Privacy</span>
           </div>
           <div className="h-10 w-[1px] bg-white/10 hidden md:block"></div>
-          <span className="text-xs font-black tracking-tight text-foreground/80">© 2026 VisionAI Systems</span>
+          <span className="text-xs font-black tracking-tight text-foreground/80">© 2026 ImgREC Systems</span>
         </div>
       </footer>
     </div>
