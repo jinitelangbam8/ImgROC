@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from "react";
-import { Upload, Camera, ImageIcon, History, Layers, Info, Sun, Moon, Database, Settings, LayoutDashboard, BrainCircuit, ScanSearch, ExternalLink, Globe, User, LogOut, BookOpen, ShieldCheck, Zap, Cpu, Volume2, Languages } from "lucide-react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
+import { Upload, Camera, ImageIcon, History, Layers, Info, Sun, Moon, Database, Settings, LayoutDashboard, BrainCircuit, ScanSearch, ExternalLink, Globe, User, LogOut, BookOpen, ShieldCheck, Zap, Cpu, Volume2, Languages, X, RotateCcw, Octagon, Trash2 } from "lucide-react";
 import { useDropzone } from "react-dropzone";
 import { motion, AnimatePresence } from "motion/react";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import confetti from "canvas-confetti";
 import { auth, signInWithGoogle, logout, db } from "@/lib/firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
-import { collection, query, where, getDocs, addDoc, orderBy, limit, Timestamp } from "firebase/firestore";
+import { collection, query, where, getDocs, addDoc, orderBy, limit, Timestamp, deleteDoc, doc } from "firebase/firestore";
 
 // Error reporting enum
 enum OperationType {
@@ -54,6 +54,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showCamera, setShowCamera] = useState(false);
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const [currentlySpeakingText, setCurrentlySpeakingText] = useState<string | null>(null);
 
   const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
     const errInfo: FirestoreErrorInfo = {
@@ -127,16 +130,40 @@ export default function App() {
     document.documentElement.classList.toggle("dark", isDarkMode);
   }, [isDarkMode]);
 
+  const stopSpeaking = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+    setCurrentlySpeakingText(null);
+  };
+
   const speakResult = async (text: string) => {
-    if (isSpeaking) return;
+    if (isSpeaking) {
+      const wasSpeakingSameText = currentlySpeakingText === text;
+      stopSpeaking();
+      // If we clicked a NEW text while speaking another, we stop the old one and start the new one
+      // If we clicked the SAME text, we just stop.
+      if (wasSpeakingSameText) return;
+    }
     
     setIsSpeaking(true);
+    setCurrentlySpeakingText(text);
     try {
       const base64Audio = await generateSpeech(text);
       const audio = new Audio(`data:audio/mp3;base64,${base64Audio}`);
-      audio.onended = () => setIsSpeaking(false);
+      audioRef.current = audio;
+      audio.onended = () => {
+        setIsSpeaking(false);
+        setCurrentlySpeakingText(null);
+        audioRef.current = null;
+      };
       audio.onerror = () => {
         setIsSpeaking(false);
+        setCurrentlySpeakingText(null);
+        audioRef.current = null;
         toast.error("Audio playback error");
       };
       await audio.play();
@@ -146,8 +173,38 @@ export default function App() {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 0.9;
       utterance.pitch = 1.1;
-      utterance.onend = () => setIsSpeaking(false);
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        setCurrentlySpeakingText(null);
+        audioRef.current = null;
+      };
       window.speechSynthesis.speak(utterance);
+    }
+  };
+
+  const viewHistoryItem = (item: ScanHistory) => {
+    setCurrentImage(item.imageUrl);
+    setAnalysisResult(item.analysis);
+    setActiveTab("dashboard");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    toast.info("Restored neural diagnostic from logs.");
+  };
+
+  const deleteHistoryItem = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (!confirm("Are you sure you want to terminate this record from history?")) return;
+    
+    try {
+      if (user) {
+        await deleteDoc(doc(db, "scans", id));
+      }
+      
+      const newHistory = history.filter(item => item.id !== id);
+      setHistory(newHistory);
+      localStorage.setItem("vision_history", JSON.stringify(newHistory));
+      toast.success("Record purged from neural logs.");
+    } catch (error) {
+      toast.error("Failed to delete record.");
     }
   };
 
@@ -387,13 +444,14 @@ export default function App() {
                             <Button 
                               variant="destructive" 
                               size="icon" 
-                              className="absolute -top-3 -right-3 rounded-full h-8 w-8 shadow-xl border-2 border-background pointer-events-auto z-40"
+                              className="absolute -top-3 -right-3 rounded-full h-8 w-8 shadow-xl border-2 border-background pointer-events-auto z-40 hover:scale-110 transition-transform"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 clearImage();
+                                toast.info("Neural workspace cleared.");
                               }}
                             >
-                              <LogOut className="h-4 w-4 rotate-90" />
+                              <X className="h-4 w-4" />
                             </Button>
                             
                             {/* Scanning Effect Overlay */}
@@ -456,6 +514,15 @@ export default function App() {
                           <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mt-1">Live Extraction Feed</p>
                         </div>
                         <div className="flex items-center gap-3">
+                          <Button 
+                            variant="ghost" 
+                            size="sm" 
+                            className="rounded-xl px-4 border-white/10 bg-white/5 hover:bg-white/10 text-[10px] font-black uppercase tracking-widest h-10 transition-all font-mono"
+                            onClick={clearImage}
+                          >
+                            <RotateCcw className="mr-2 h-3 w-3" />
+                            Reset System
+                          </Button>
                           <Badge variant="outline" className="rounded-xl font-mono text-[11px] font-black py-1.5 px-3 border-primary text-primary glow-primary bg-primary/5">0.82ms/img</Badge>
                         </div>
                       </div>
@@ -522,16 +589,19 @@ export default function App() {
                                     size="sm" 
                                     className={cn(
                                       "h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider bg-secondary/10 text-secondary hover:bg-secondary hover:text-white transition-all shadow-sm",
-                                      isSpeaking && "opacity-50 cursor-wait"
+                                      isSpeaking && currentlySpeakingText === obj.description && "bg-destructive/10 text-destructive hover:bg-destructive"
                                     )}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       if (obj.description) speakResult(obj.description);
                                     }}
-                                    disabled={isSpeaking}
                                   >
-                                    <Volume2 className={cn("h-3 w-3 mr-1.5", isSpeaking && "animate-pulse")} />
-                                    Voice Info
+                                    {isSpeaking && currentlySpeakingText === obj.description ? (
+                                      <Octagon className="h-3 w-3 mr-1.5 animate-pulse" />
+                                    ) : (
+                                      <Volume2 className="h-3 w-3 mr-1.5" />
+                                    )}
+                                    {isSpeaking && currentlySpeakingText === obj.description ? "Stop Info" : "Voice Info"}
                                   </Button>
                                 </div>
                               </motion.div>
@@ -586,12 +656,18 @@ export default function App() {
                               <Button 
                                 variant="ghost" 
                                 size="sm" 
-                                className="h-6 px-2 rounded-lg text-[8px] font-black uppercase tracking-wider bg-primary/20 text-primary hover:bg-primary hover:text-white transition-all"
+                                className={cn(
+                                  "h-6 px-2 rounded-lg text-[8px] font-black uppercase tracking-wider bg-primary/20 text-primary hover:bg-primary hover:text-white transition-all",
+                                  isSpeaking && currentlySpeakingText === analysisResult.summary && "bg-destructive/20 text-destructive hover:bg-destructive"
+                                )}
                                 onClick={() => speakResult(analysisResult.summary)}
-                                disabled={isSpeaking}
                               >
-                                <Volume2 className={cn("h-2.5 w-2.5 mr-1", isSpeaking && "animate-pulse")} />
-                                Listen
+                                {isSpeaking && currentlySpeakingText === analysisResult.summary ? (
+                                  <Octagon className="h-2.5 w-2.5 mr-1 animate-pulse" />
+                                ) : (
+                                  <Volume2 className="h-2.5 w-2.5 mr-1" />
+                                )}
+                                {isSpeaking && currentlySpeakingText === analysisResult.summary ? "Stop" : "Listen"}
                               </Button>
                             </h4>
                             <p className="text-sm leading-relaxed text-foreground font-medium">{analysisResult.summary}</p>
@@ -693,10 +769,7 @@ export default function App() {
                         animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: idx * 0.05 }}
                         key={item.id}
-                        onClick={() => {
-                          setCurrentImage(item.imageUrl);
-                          setAnalysisResult(item.analysis);
-                        }}
+                        onClick={() => viewHistoryItem(item)}
                         className="group p-4 rounded-3xl bg-white/40 dark:bg-white/5 border border-white/10 hover:border-primary/40 transition-all cursor-pointer shadow-sm hover:shadow-xl hover:bg-white/60 dark:hover:bg-white/10"
                       >
                         <div className="flex gap-4">
@@ -709,7 +782,15 @@ export default function App() {
                           <div className="flex flex-col justify-center min-w-0 flex-1">
                             <div className="flex justify-between items-start gap-2">
                               <span className="font-black text-sm truncate leading-tight">{item.analysis.objects[0]?.objectName || "Unknown"}</span>
-                              <span className="text-[10px] font-black text-primary font-mono">{(item.analysis.objects[0]?.confidence * 100).toFixed(0)}%</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-black text-primary font-mono">{(item.analysis.objects[0]?.confidence * 100).toFixed(0)}%</span>
+                                <button 
+                                  onClick={(e) => deleteHistoryItem(e, item.id)}
+                                  className="p-1 hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </button>
+                              </div>
                             </div>
                             <span className="text-[9px] font-black text-muted-foreground uppercase tracking-widest mt-0.5">{item.analysis.objects[0]?.category}</span>
                             <div className="flex items-center gap-2 mt-2">
@@ -779,14 +860,16 @@ export default function App() {
                         whileHover={{ y: -8, scale: 1.02 }}
                         key={item.id} 
                         className="group relative cursor-pointer overflow-hidden rounded-4xl border border-white/10 bg-slate-50 dark:bg-white/5 aspect-square transition-all hover:shadow-2xl hover:shadow-primary/20 hover:border-primary/40 glow-primary"
-                        onClick={() => {
-                          setCurrentImage(item.imageUrl);
-                          setAnalysisResult(item.analysis);
-                          setActiveTab("dashboard");
-                        }}
+                        onClick={() => viewHistoryItem(item)}
                       >
                         <img src={item.imageUrl} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-125" alt="History" />
                         <div className="absolute inset-0 bg-linear-to-t from-slate-900/90 via-slate-900/10 to-transparent p-6 flex flex-col justify-end translate-y-4 group-hover:translate-y-0 transition-transform">
+                          <button 
+                            onClick={(e) => deleteHistoryItem(e, item.id)}
+                            className="absolute top-4 right-4 p-2 bg-destructive/10 hover:bg-destructive text-destructive hover:text-white rounded-xl backdrop-blur-md border border-destructive/20 opacity-0 group-hover:opacity-100 transition-all z-20"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                           <div className="space-y-1">
                             <p className="text-[9px] font-black text-primary uppercase tracking-[0.2em] mb-1">{item.analysis.objects[0]?.category}</p>
                             <p className="text-sm font-black text-white leading-tight">{item.analysis.objects[0]?.objectName}</p>
