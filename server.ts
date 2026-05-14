@@ -2,6 +2,9 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 async function startServer() {
   const app = express();
@@ -11,21 +14,22 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-  // Ensure uploads directory exists
+  // Ensure uploads directory exists (use tmp for serverless if needed)
   const uploadsDir = path.join(process.cwd(), "uploads");
-  if (!fs.existsSync(uploadsDir)) {
+  if (!fs.existsSync(uploadsDir) && process.env.NODE_ENV !== "production") {
     fs.mkdirSync(uploadsDir);
   }
 
   // Health check API
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    res.json({ 
+      status: "ok", 
+      timestamp: new Date().toISOString(),
+      service: "VisionAI Engine"
+    });
   });
 
-  // Proxy to Gemini API should be done on frontend per guidelines,
-  // but we can have secondary logic here for history if needed.
-  // In this app, we'll keep the ML call on the frontend for speed/direct streaming,
-  // but the backend will handle persistence and metadata if Firebase is used.
+  // AI Analysis & TTS handled on frontend per gemini-api skill guidelines.
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
@@ -44,7 +48,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 Mission Control active at http://localhost:${PORT}`);
+    console.log(`🚀 VisionAI Kernel active at http://localhost:${PORT}`);
   });
 }
 

@@ -1,11 +1,9 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 export interface DetectionResult {
   objectName: string;
   confidence: number;
-  description: string;
+  description?: string;
   category: string;
   boundingBox?: {
     ymin: number;
@@ -22,25 +20,14 @@ export interface VisionAnalysis {
   detectedLanguage?: string;
 }
 
-export const analyzeImage = async (base64Image: string, mimeType: string = "image/jpeg"): Promise<VisionAnalysis> => {
-  const model = "gemini-3-flash-preview";
-  
-  const prompt = `Analyze this image for object detection, classification, and OCR. 
-  Identify the main objects, their categories, and confidence scores (0-1). 
-  If possible, provide normalized bounding box coordinates [ymin, xmin, ymax, xmax] for each object.
-  Also, extract any visible text (OCR) and identify the dominant language.
-  
-  Return the results in strict JSON format.`;
+const ai = new GoogleGenAI({ apiKey: (process.env as any).GEMINI_API_KEY });
 
+export const analyzeImage = async (base64Image: string, mimeType: string = "image/jpeg"): Promise<VisionAnalysis> => {
   const response = await ai.models.generateContent({
-    model,
+    model: "gemini-3-flash-preview",
     contents: [
-      {
-        parts: [
-          { text: prompt },
-          { inlineData: { data: base64Image, mimeType } }
-        ]
-      }
+      { text: "Detailed object detection and OCR analysis. Return JSON only." },
+      { inlineData: { data: base64Image, mimeType } }
     ],
     config: {
       responseMimeType: "application/json",
@@ -78,10 +65,5 @@ export const analyzeImage = async (base64Image: string, mimeType: string = "imag
     }
   });
 
-  try {
-    return JSON.parse(response.text.trim()) as VisionAnalysis;
-  } catch (err) {
-    console.error("JSON Parse Error:", response.text);
-    throw new Error("Failed to parse AI analysis result.");
-  }
+  return JSON.parse(response.text || "{}") as VisionAnalysis;
 };

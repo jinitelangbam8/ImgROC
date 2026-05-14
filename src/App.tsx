@@ -10,9 +10,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import imageCompression from "browser-image-compression";
 import { Toaster, toast } from "sonner";
 import { analyzeImage, VisionAnalysis } from "@/services/geminiService";
-import { GoogleGenAI } from "@google/genai";
+import { cn } from "@/lib/utils";
 import confetti from "canvas-confetti";
 
 // Types
@@ -40,33 +41,12 @@ export default function App() {
     document.documentElement.classList.toggle("dark", isDarkMode);
   }, [isDarkMode]);
 
-  const speakResult = async (text: string) => {
-    try {
-      const ai = new GoogleGenAI({ apiKey: (process.env as any).GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-tts-preview",
-        contents: [{ parts: [{ text }] }],
-        config: {
-          responseModalities: ["AUDIO" as any],
-          speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: 'Kore' },
-              },
-          },
-        },
-      });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (base64Audio) {
-        const audio = new Audio(`data:audio/wav;base64,${base64Audio}`);
-        audio.play();
-      }
-    } catch (err) {
-      console.error("TTS Error:", err);
-      // Fallback to web speech api
-      const utterance = new SpeechSynthesisUtterance(text);
-      window.speechSynthesis.speak(utterance);
-    }
+  const speakResult = (text: string) => {
+    // Using Web Speech API for clean, robust results without API overhead
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.9;
+    utterance.pitch = 1.1;
+    window.speechSynthesis.speak(utterance);
   };
 
   const captureCamera = async () => {
@@ -110,20 +90,38 @@ export default function App() {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { "image/*": [] },
+    accept: { "image/jpeg": [], "image/png": [], "image/webp": [] },
     multiple: false
-  });
+  } as any);
 
   const performAnalysis = async (base64: string, mimeType: string) => {
     setIsAnalyzing(true);
     try {
-      const result = await analyzeImage(base64, mimeType);
+      // Compress image before sending to backend to speed up network transfer
+      const res = await fetch(`data:${mimeType};base64,${base64}`);
+      const blob = await res.blob();
+      const file = new File([blob], "input.jpg", { type: mimeType });
+      
+      const options = {
+        maxSizeMB: 0.5,
+        maxWidthOrHeight: 1280,
+        useWebWorker: true,
+      };
+
+      const compressedFile = await imageCompression(file, options);
+      const reader = new FileReader();
+      const compressedBase64 = await new Promise<string>((resolve) => {
+        reader.onloadend = () => resolve((reader.result as string).split(",")[1]);
+        reader.readAsDataURL(compressedFile);
+      });
+
+      const result = await analyzeImage(compressedBase64, compressedFile.type);
       setAnalysisResult(result);
       
       const newHistoryItem: ScanHistory = {
         id: Math.random().toString(36).substr(2, 9),
         timestamp: Date.now(),
-        imageUrl: `data:${mimeType};base64,${base64}`,
+        imageUrl: `data:${compressedFile.type};base64,${compressedBase64}`,
         analysis: result
       };
       
@@ -148,145 +146,233 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen bg-background text-foreground selection:bg-primary selection:text-primary-foreground`}>
+    <div className={`min-h-screen bg-background text-foreground selection:bg-primary/30 selection:text-primary transition-colors duration-500`}>
       <Toaster position="top-right" richColors />
       
-      {/* Navigation */}
-      <nav className="sticky top-0 z-50 w-full border-b bg-white dark:bg-card px-8 h-16 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-9 h-9 bg-primary rounded-xl flex items-center justify-center shadow-lg shadow-primary/20">
-            <ScanSearch className="h-5 w-5 text-primary-foreground" />
-          </div>
-          <h1 className="text-xl font-bold tracking-tight text-foreground">VisionAI <span className="text-primary">Core</span></h1>
-        </div>
-        
-        <div className="hidden md:flex items-center gap-8 text-sm font-medium">
-          <button onClick={() => setActiveTab("dashboard")} className={`transition-colors py-5 border-b-2 ${activeTab === "dashboard" ? "text-primary border-primary" : "text-muted-foreground border-transparent hover:text-foreground"}`}>Analyzer</button>
-          <button onClick={() => setActiveTab("history")} className={`transition-colors py-5 border-b-2 ${activeTab === "history" ? "text-primary border-primary" : "text-muted-foreground border-transparent hover:text-foreground"}`}>History</button>
-          <button onClick={() => setActiveTab("system")} className={`transition-colors py-5 border-b-2 ${activeTab === "system" ? "text-primary border-primary" : "text-muted-foreground border-transparent hover:text-foreground"}`}>Metrics</button>
-          <button className="text-muted-foreground hover:text-foreground transition-colors">Documentation</button>
-        </div>
+      {/* Background Decorative Elements */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
+        <div className="absolute -top-[10%] -left-[10%] w-[40%] h-[40%] bg-primary/20 blur-[120px] rounded-full animate-pulse"></div>
+        <div className="absolute -bottom-[10%] -right-[10%] w-[40%] h-[40%] bg-secondary/20 blur-[120px] rounded-full animate-pulse delay-700"></div>
+      </div>
 
+      <header className="sticky top-0 z-50 glass border-b border-white/10 px-6 h-18 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => setIsDarkMode(!isDarkMode)} className="rounded-full w-9 h-9">
-            {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </Button>
-          <Separator orientation="vertical" className="h-6 mx-1" />
-          <div className="w-8 h-8 rounded-full bg-secondary hidden sm:block"></div>
+          <div className="bg-linear-to-br from-primary to-secondary p-2 rounded-xl glow-primary">
+            <ScanSearch className="h-6 w-6 text-white" />
+          </div>
+          <h1 className="text-2xl font-black tracking-tighter text-gradient">
+            VISION<span className="opacity-70">AI</span>
+          </h1>
         </div>
-      </nav>
 
-      <main className="container mx-auto max-w-7xl px-4 md:px-8">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-8">
-          <TabsContent value="dashboard" className="mt-0">
-            <div className="flex flex-col lg:flex-row gap-8 pb-12">
+        <nav className="hidden md:flex items-center gap-1 bg-muted/50 p-1 rounded-2xl border border-white/5">
+          {["Dashboard", "History", "System"].map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab.toLowerCase() as any)}
+              className={cn(
+                "px-5 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all",
+                activeTab === tab.toLowerCase()
+                  ? "bg-white dark:bg-card shadow-lg text-primary"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {tab}
+            </button>
+          ))}
+        </nav>
+
+        <div className="flex items-center gap-4">
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            onClick={() => setIsDarkMode(!isDarkMode)} 
+            className="rounded-full hover:bg-primary/10 hover:text-primary transition-colors"
+          >
+            {isDarkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+          </Button>
+          <div className="flex flex-col items-end">
+            <span className="text-[10px] font-black uppercase tracking-widest text-primary">System Status</span>
+            <span className="text-xs font-bold text-emerald-500 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+              Operational
+            </span>
+          </div>
+        </div>
+      </header>
+
+      <main className="container mx-auto px-6 relative z-10">
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="mt-12 space-y-12">
+          <TabsContent value="dashboard" className="mt-0 focus-visible:outline-none">
+            <div className="flex flex-col lg:flex-row gap-10 pb-12">
               {/* Left Column: Active Session */}
-              <div className="flex-1 flex flex-col gap-6">
-                <div className="space-y-1 px-2">
-                  <h2 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-100 uppercase text-xs opacity-50 font-mono mb-2">Active Session</h2>
-                  <h1 className="text-3xl font-extrabold tracking-tight">Object Detection</h1>
-                  <p className="text-muted-foreground text-sm">Real-time identification with YOLOv8 & Gemini Neural Engine.</p>
-                </div>
+              <div className="flex-1 flex flex-col gap-8">
+                <motion.div 
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  className="space-y-2 px-2"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="h-[1px] w-8 bg-primary"></span>
+                    <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">Neural Interface</h2>
+                  </div>
+                  <h1 className="text-5xl font-black tracking-tight leading-tight">
+                    Object <span className="text-gradient">Intelligence</span>
+                  </h1>
+                  <p className="text-muted-foreground text-sm max-w-md">
+                    Execute real-time identification with advanced neural processing and deep metric extraction.
+                  </p>
+                </motion.div>
 
-                <div className="grid grid-cols-1 gap-6">
+                <div className="grid grid-cols-1 gap-8">
                   {/* Analysis Viewport */}
-                  <Card className="rounded-[2.5rem] shadow-sm border-border overflow-hidden flex flex-col min-h-[600px] bg-white dark:bg-card">
-                    <div className="relative flex-1 bg-slate-100 dark:bg-secondary/20 flex items-center justify-center p-8 min-h-[400px]">
+                  <Card className="rounded-4xl glow-primary border-white/10 overflow-hidden flex flex-col min-h-[650px] bg-white/50 dark:bg-card/50 backdrop-blur-2xl transition-all">
+                    <div className="relative flex-1 bg-slate-100/50 dark:bg-black/40 flex items-center justify-center p-10 min-h-[450px]">
                       <div {...getRootProps()} className="absolute inset-0 z-10 cursor-pointer">
                         <input {...getInputProps()} />
                       </div>
                       
                       {currentImage ? (
                         <div className="relative z-20 w-full h-full flex items-center justify-center">
-                          <img src={currentImage} className="max-h-[350px] w-auto rounded-3xl shadow-2xl border border-white/20" alt="Preview" />
-                          
-                          {/* OCR Text Overlay (Subtle) */}
-                          {analysisResult?.ocrText && (
-                            <div className="absolute bottom-4 left-4 right-4 bg-black/40 backdrop-blur-md p-3 rounded-2xl border border-white/10 text-[10px] text-white/90 line-clamp-2 italic">
-                              <span className="font-bold opacity-50 mr-2 uppercase tracking-widest">OCR:</span>
-                              {analysisResult.ocrText}
-                            </div>
-                          )}
+                          <motion.div 
+                            initial={{ scale: 0.9, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            className="relative"
+                          >
+                            <img src={currentImage} className="max-h-[400px] w-auto rounded-3xl shadow-2xl border-4 border-white/20" alt="Preview" />
+                            
+                            {/* Scanning Effect Overlay */}
+                            {isAnalyzing && (
+                              <motion.div 
+                                animate={{ top: ["0%", "100%", "0%"] }}
+                                transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                                className="absolute left-0 right-0 h-1 bg-primary glow-primary z-30"
+                              />
+                            )}
+
+                            {/* OCR Text Overlay */}
+                            {analysisResult?.ocrText && (
+                              <div className="absolute -bottom-6 left-6 right-6 glass p-4 rounded-2xl text-[11px] text-foreground/90 italic shadow-xl">
+                                <span className="font-black text-primary mr-2 uppercase tracking-widest text-[9px]">Text Output</span>
+                                "{analysisResult.ocrText}"
+                              </div>
+                            )}
+                          </motion.div>
                         </div>
                       ) : (
-                        <div className="flex flex-col items-center text-center space-y-6 z-20 pointer-events-none">
-                          <div className="w-20 h-20 bg-white dark:bg-card rounded-[2rem] shadow-xl flex items-center justify-center transition-transform hover:scale-105">
+                        <div className="flex flex-col items-center text-center space-y-8 z-20 pointer-events-none">
+                          <div className="w-24 h-24 bg-white dark:bg-card rounded-4xl shadow-2xl flex items-center justify-center transition-all hover:scale-110 glow-primary border border-white/20">
                             <Upload className="h-10 w-10 text-primary" />
                           </div>
-                          <div className="space-y-2">
-                            <p className="font-extrabold text-2xl tracking-tight">Neural Input</p>
-                            <p className="text-sm text-muted-foreground max-w-[200px]">Drag assets or browse local archives for classification.</p>
+                          <div className="space-y-3">
+                            <p className="font-black text-3xl tracking-tight uppercase">Neural Input</p>
+                            <p className="text-sm text-muted-foreground max-w-[240px] leading-relaxed">
+                              Inject visual assets into the matrix for classification and processing.
+                            </p>
                           </div>
-                          <Button variant="outline" className="rounded-2xl px-8 border-primary/20 text-primary font-bold">Browse Library</Button>
+                          <Button size="lg" className="rounded-2xl px-10 border-primary/20 bg-primary/10 text-primary font-black hover:bg-primary transition-all hover:text-white glow-primary">
+                            INITIATE SCAN
+                          </Button>
                         </div>
                       )}
 
                       {isAnalyzing && (
-                        <div className="absolute inset-0 z-30 bg-white/80 dark:bg-black/80 backdrop-blur-xl flex flex-col items-center justify-center">
-                          <div className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
-                          <p className="mt-6 font-black text-primary animate-pulse uppercase tracking-[0.3em] text-[10px]">Processing Vision Matrix</p>
+                        <div className="absolute inset-0 z-30 bg-white/80 dark:bg-black/90 backdrop-blur-2xl flex flex-col items-center justify-center space-y-8">
+                          <div className="relative">
+                            <div className="w-20 h-20 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <div className="w-10 h-10 border-4 border-secondary border-b-transparent rounded-full animate-spin-reverse"></div>
+                            </div>
+                          </div>
+                          <div className="text-center">
+                            <p className="font-black text-primary animate-pulse uppercase tracking-[0.4em] text-[10px]">Processing Vision Matrix</p>
+                            <p className="text-[10px] text-muted-foreground mt-2 font-mono">ENCRYPTING TENSOR FIELDS...</p>
+                          </div>
                         </div>
                       )}
                     </div>
                     
-                    <div className="p-8 bg-white dark:bg-card border-t border-slate-100 dark:border-white/5">
-                      <div className="flex items-center justify-between mb-6">
-                        <h3 className="font-extrabold text-lg tracking-tight">Extraction Results</h3>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Speed:</span>
-                          <Badge variant="outline" className="rounded-lg font-mono text-[10px] font-bold py-1 border-primary/20 text-primary">0.82ms/img</Badge>
+                    <div className="p-10 glass border-t border-white/10">
+                      <div className="flex items-center justify-between mb-8">
+                        <div>
+                          <h3 className="font-black text-xl tracking-tight">Detection Stream</h3>
+                          <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-widest mt-1">Live Extraction Feed</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <Badge variant="outline" className="rounded-xl font-mono text-[11px] font-black py-1.5 px-3 border-primary text-primary glow-primary bg-primary/5">0.82ms/img</Badge>
                         </div>
                       </div>
                       
-                      <ScrollArea className="h-[200px] pr-4">
+                      <ScrollArea className="h-[250px] pr-4">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           {analysisResult?.objects.map((obj, i) => (
-                            <div key={i} className="flex items-center justify-between p-4 bg-slate-50 dark:bg-secondary/20 rounded-3xl border border-slate-100 dark:border-white/5 group hover:border-primary/30 transition-colors">
+                            <motion.div 
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: i * 0.1 }}
+                              key={i} 
+                              className="flex items-center justify-between p-5 bg-white/40 dark:bg-white/5 rounded-3xl border border-white/10 group hover:border-primary/50 transition-all hover:shadow-xl hover:bg-white/60"
+                            >
                               <div className="flex flex-col gap-1 min-w-0">
-                                <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider font-mono">{obj.category}</span>
-                                <span className="font-extrabold text-sm truncate">{obj.objectName}</span>
+                                <span className="text-[9px] uppercase font-black text-primary tracking-widest font-mono opacity-70">{obj.category}</span>
+                                <span className="font-black text-base truncate">{obj.objectName}</span>
                               </div>
-                              <span className="text-primary font-mono font-black text-lg transition-transform group-hover:scale-110">
-                                {(obj.confidence * 100).toFixed(0)}%
-                              </span>
+                              <div className="flex flex-col items-end">
+                                <span className="text-primary font-mono font-black text-xl transition-transform group-hover:scale-110">
+                                  {(obj.confidence * 100).toFixed(0)}%
+                                </span>
+                                <span className="text-[8px] font-bold text-muted-foreground uppercase">Confidence</span>
+                              </div>
+                            </motion.div>
+                          ))}
+                          {!analysisResult && !isAnalyzing && (
+                            <div className="col-span-full py-12 text-center opacity-30 flex flex-col items-center gap-4">
+                              <div className="w-12 h-12 rounded-full border-2 border-dashed border-primary animate-spin-slow"></div>
+                              <p className="text-[10px] font-black uppercase tracking-widest">Awaiting Neural Data</p>
                             </div>
-                          ))}
-                          {!analysisResult && [1,2].map(i => (
-                            <div key={i} className="h-20 bg-slate-100 dark:bg-secondary/10 rounded-3xl animate-pulse"></div>
-                          ))}
+                          )}
                         </div>
                         
                         {analysisResult?.summary && (
-                          <div className="mt-6 p-4 rounded-3xl bg-indigo-50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-500/20">
-                            <p className="text-xs leading-relaxed text-indigo-700 dark:text-indigo-300 font-medium">{analysisResult.summary}</p>
-                          </div>
+                          <motion.div 
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            className="mt-8 p-6 rounded-3xl bg-primary/10 border border-primary/20 relative overflow-hidden"
+                          >
+                            <div className="absolute top-0 right-0 p-2 opacity-20">
+                              <Layers className="h-10 w-10 text-primary" />
+                            </div>
+                            <h4 className="text-[10px] font-black uppercase tracking-widest text-primary mb-2">Executive Summary</h4>
+                            <p className="text-sm leading-relaxed text-foreground font-medium">{analysisResult.summary}</p>
+                          </motion.div>
                         )}
                       </ScrollArea>
                     </div>
                   </Card>
 
                   {/* Action Bar */}
-                  <div className="flex gap-4">
+                  <div className="flex flex-col sm:flex-row gap-5">
                     <Button 
                       size="lg" 
-                      className="flex-1 py-8 rounded-[2rem] shadow-2xl shadow-primary/30 text-lg font-extrabold"
+                      className="flex-1 py-10 rounded-3xl shadow-2xl shadow-primary/30 text-xl font-black bg-primary hover:bg-primary/90 glow-primary transition-all active:scale-95"
                       onClick={() => setShowCamera(true)}
                     >
-                      <Camera className="mr-3 h-6 w-6" />
-                      Live Neural Scan
+                      <Camera className="mr-3 h-7 w-7" />
+                      LIVE OPTICAL SCAN
                     </Button>
                     <Button 
                       variant="outline" 
                       size="lg" 
-                      className="px-10 py-8 rounded-[2rem] font-bold bg-white dark:bg-card border-slate-200 dark:border-white/10 hover:bg-slate-50 transition-all text-slate-600"
+                      className="px-12 py-10 rounded-3xl font-black bg-white/40 dark:bg-white/5 border-white/20 hover:bg-white/60 transition-all text-foreground text-base tracking-tight"
                       onClick={() => analysisResult && speakResult(analysisResult.summary)}
                       disabled={!analysisResult}
                     >
-                      Audit Log
+                      AUDIT LOG
                     </Button>
                   </div>
                 </div>
               </div>
+
 
               {/* Camera Dialog */}
               <AnimatePresence>
@@ -295,40 +381,45 @@ export default function App() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-xl p-4"
+                    className="fixed inset-0 z-[100] flex items-center justify-center glass p-6"
                   >
                     <motion.div
                       initial={{ scale: 0.9, y: 20 }}
                       animate={{ scale: 1, y: 0 }}
                       exit={{ scale: 0.9, y: 20 }}
+                      className="w-full max-w-xl"
                     >
-                      <Card className="w-full max-w-xl border-none shadow-[0_32px_64px_-16px_rgba(0,0,0,0.2)] rounded-[3rem] overflow-hidden bg-white dark:bg-card">
+                      <Card className="border-white/10 shadow-2xl rounded-4xl overflow-hidden bg-white/60 dark:bg-card/60 backdrop-blur-3xl glow-primary">
                         <CardHeader className="p-8 pb-4">
                           <div className="flex items-center justify-between">
                             <div className="space-y-1">
-                              <CardTitle className="text-2xl font-black tracking-tight">Optical Capture</CardTitle>
-                              <CardDescription className="text-[10px] font-bold uppercase tracking-widest opacity-60">Neural Stream Establishing...</CardDescription>
+                              <CardTitle className="text-3xl font-black tracking-tight leading-none text-gradient">Optical Capture</CardTitle>
+                              <CardDescription className="text-[10px] font-black uppercase tracking-[0.3em] text-primary opacity-70">Neural Stream Establishing...</CardDescription>
                             </div>
-                            <Button variant="ghost" size="icon" onClick={() => setShowCamera(false)} className="rounded-full">
-                              <History className="h-5 w-5 rotate-45" />
+                            <Button variant="ghost" size="icon" onClick={() => setShowCamera(false)} className="rounded-full hover:bg-primary/10 transition-colors">
+                              <History className="h-5 w-5 rotate-45 text-primary" />
                             </Button>
                           </div>
                         </CardHeader>
                         <CardContent className="px-8 pb-4">
-                          <div className="aspect-video w-full bg-slate-100 dark:bg-secondary/40 rounded-[2rem] flex items-center justify-center border-2 border-primary/10 overflow-hidden relative group">
-                            <div className="absolute inset-x-0 top-0 h-1 bg-primary/40 animate-pulse z-10 shadow-[0_0_15px_rgba(79,70,229,0.5)]"></div>
+                          <div className="aspect-video w-full bg-slate-100/50 dark:bg-black/40 rounded-3xl flex items-center justify-center border border-primary/20 overflow-hidden relative group">
+                            <div className="absolute inset-0 bg-linear-to-b from-primary/5 to-transparent pointer-events-none"></div>
+                            <motion.div 
+                              animate={{ top: ["0%", "100%", "0%"] }} 
+                              transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
+                              className="absolute left-0 right-0 h-0.5 bg-primary/40 glow-primary z-10"
+                            />
                             <div className="flex flex-col items-center gap-6 text-center z-20">
-                              <div className="w-20 h-20 bg-white dark:bg-card rounded-[2rem] shadow-xl flex items-center justify-center animate-bounce">
+                              <div className="w-24 h-24 bg-white dark:bg-card rounded-4xl shadow-2xl flex items-center justify-center animate-pulse glow-primary border border-white/20">
                                 <Camera className="h-10 w-10 text-primary" />
                               </div>
-                              <p className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">Awaiting Hardware Consent</p>
+                              <p className="text-[10px] font-black uppercase tracking-[0.4em] text-primary">Awaiting Hardware Consent</p>
                             </div>
-                            <div className="absolute inset-0 bg-gradient-to-t from-primary/5 to-transparent"></div>
                           </div>
                         </CardContent>
                         <CardFooter className="p-8 pt-4 flex gap-4">
-                          <Button variant="outline" onClick={() => setShowCamera(false)} className="flex-1 py-7 rounded-2xl font-bold border-slate-200">Terminate</Button>
-                          <Button onClick={captureCamera} className="flex-[2] py-7 rounded-2xl font-black shadow-xl shadow-primary/20">Capture Neural Frame</Button>
+                          <Button variant="outline" onClick={() => setShowCamera(false)} className="flex-1 py-8 rounded-2xl font-black border-white/20 hover:bg-white/40 transition-all text-xs uppercase tracking-widest">Terminate</Button>
+                          <Button onClick={captureCamera} className="flex-[2] py-8 rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-primary/20 bg-primary glow-primary hover:bg-primary/90 transition-all active:scale-95">Capture Matrix</Button>
                         </CardFooter>
                       </Card>
                     </motion.div>
@@ -343,93 +434,127 @@ export default function App() {
                   <button onClick={() => setActiveTab("history")} className="text-primary text-[10px] font-bold uppercase tracking-wider hover:underline">View Stream</button>
                 </div>
 
-                <div className="flex flex-col gap-3 overflow-y-auto max-h-[500px] lg:max-h-none">
-                  {history.slice(0, 5).map((item) => (
-                    <motion.div 
-                      key={item.id}
-                      onClick={() => {
-                        setCurrentImage(item.imageUrl);
-                        setAnalysisResult(item.analysis);
-                      }}
-                      whileHover={{ x: 4 }}
-                      className="group p-3 rounded-2xl bg-white dark:bg-card border border-border/30 hover:border-primary/30 transition-all cursor-pointer shadow-sm"
-                    >
-                      <div className="flex gap-3">
-                        <div className="w-14 h-14 bg-secondary rounded-xl overflow-hidden shrink-0 border border-border/20">
-                          <img src={item.imageUrl} className="w-full h-full object-cover text-center" alt="Log" />
+                <div className="flex flex-col gap-4 overflow-y-auto max-h-[500px] lg:max-h-none pr-2">
+                  <AnimatePresence mode="popLayout">
+                    {history.slice(0, 5).map((item, idx) => (
+                      <motion.div 
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: idx * 0.05 }}
+                        key={item.id}
+                        onClick={() => {
+                          setCurrentImage(item.imageUrl);
+                          setAnalysisResult(item.analysis);
+                        }}
+                        className="group p-4 rounded-3xl bg-white/40 dark:bg-white/5 border border-white/10 hover:border-primary/40 transition-all cursor-pointer shadow-sm hover:shadow-xl hover:bg-white/60 dark:hover:bg-white/10"
+                      >
+                        <div className="flex gap-4">
+                          <div className="w-16 h-16 bg-slate-100 dark:bg-white/5 rounded-2xl overflow-hidden shrink-0 border border-white/10 relative">
+                            <img src={item.imageUrl} className="w-full h-full object-cover transition-transform group-hover:scale-110" alt="Log" />
+                            <div className="absolute inset-0 bg-linear-to-t from-black/60 to-transparent flex items-end p-2 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                              <div className="w-full h-1 bg-primary rounded-full glow-primary"></div>
+                            </div>
+                          </div>
+                          <div className="flex flex-col justify-center min-w-0 flex-1">
+                            <div className="flex justify-between items-start gap-2">
+                              <span className="font-black text-sm truncate leading-tight">{item.analysis.objects[0]?.objectName || "Unknown"}</span>
+                              <span className="text-[10px] font-black text-primary font-mono">{(item.analysis.objects[0]?.confidence * 100).toFixed(0)}%</span>
+                            </div>
+                            <span className="text-[9px] font-black text-muted-foreground uppercase tracking-widest mt-0.5">{item.analysis.objects[0]?.category}</span>
+                            <div className="flex items-center gap-2 mt-2">
+                              <span className="w-1.5 h-1.5 rounded-full bg-primary/40 group-hover:bg-primary transition-colors"></span>
+                              <span className="text-[8px] text-muted-foreground/60 font-bold tracking-tighter uppercase">{new Date(item.timestamp).toLocaleTimeString()}</span>
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex flex-col justify-center min-w-0">
-                          <span className="font-bold text-sm truncate">{item.analysis.objects[0]?.objectName || "Unknown"}</span>
-                          <span className="text-[10px] font-medium text-muted-foreground uppercase">{item.analysis.objects[0]?.category} • {(item.analysis.objects[0]?.confidence * 100).toFixed(0)}%</span>
-                          <span className="text-[9px] text-muted-foreground/60 mt-1">{new Date(item.timestamp).toLocaleTimeString()}</span>
-                        </div>
-                      </div>
-                    </motion.div>
-                  ))}
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
                   {history.length === 0 && (
-                    <div className="p-8 text-center bg-secondary/10 rounded-3xl border border-dashed text-muted-foreground italic text-sm">
-                      Logs empty. Start analyzing.
+                    <div className="p-12 text-center bg-white/40 dark:bg-white/5 rounded-4xl border border-dashed border-white/20 text-muted-foreground italic text-xs flex flex-col items-center gap-3">
+                      <History className="h-6 w-6 opacity-30" />
+                      <p className="font-black uppercase tracking-widest text-[10px]">Data Stream Empty</p>
                     </div>
                   )}
                 </div>
 
                 {/* Growth Widget */}
-                <Card className="mt-8 bg-primary text-primary-foreground rounded-3xl border-none shadow-lg shadow-primary/20 overflow-hidden relative">
-                  <div className="absolute top-0 right-0 p-4 opacity-10">
-                    <BrainCircuit className="w-20 h-20" />
+                <Card className="mt-8 bg-linear-to-br from-primary via-secondary to-primary bg-[length:200%_200%] animate-gradient text-white rounded-4xl border-none glow-primary overflow-hidden relative">
+                  <div className="absolute top-0 right-0 p-6 opacity-20 rotate-12">
+                    <BrainCircuit className="w-24 h-24" />
                   </div>
-                  <CardHeader className="pb-2">
-                    <CardDescription className="text-primary-foreground/60 text-[10px] font-bold uppercase tracking-widest">Model Quota</CardDescription>
-                    <CardTitle className="text-2xl font-bold tracking-tighter">Daily Sync</CardTitle>
+                  <CardHeader className="pb-2 relative z-10">
+                    <CardDescription className="text-white/70 text-[10px] font-black uppercase tracking-[0.2em]">Neural Capacity</CardDescription>
+                    <CardTitle className="text-3xl font-black tracking-tighter">System Health</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="flex items-end gap-1.5 h-10">
-                      <div className="flex-1 bg-white/20 rounded-md h-[40%]"></div>
-                      <div className="flex-1 bg-white/20 rounded-md h-[60%]"></div>
-                      <div className="flex-1 bg-white/20 rounded-md h-[55%]"></div>
-                      <div className="flex-1 bg-white/40 rounded-md h-[80%]"></div>
-                      <div className="flex-1 bg-white rounded-md h-full shadow-lg shadow-white/20"></div>
+                  <CardContent className="space-y-6 relative z-10">
+                    <div className="flex items-end gap-2 h-14">
+                      {[0.4, 0.6, 0.5, 0.8, 1, 0.7, 0.9].map((h, i) => (
+                        <div key={i} className="flex-1 bg-white/20 rounded-lg transition-all hover:bg-white/40" style={{ height: `${h * 100}%` }}></div>
+                      ))}
                     </div>
-                    <p className="text-[10px] font-medium leading-tight text-primary-foreground/80">42 / 100 Requests used in last 24h. High processing speed available.</p>
+                    <div className="p-4 bg-white/10 rounded-2xl border border-white/10 backdrop-blur-md">
+                      <p className="text-[10px] font-black leading-relaxed uppercase tracking-widest">
+                        Throughput: <span className="text-white">4.2 GB/s</span>
+                        <br />
+                        Efficiency: <span className="text-white">99.8%</span>
+                      </p>
+                    </div>
                   </CardContent>
                 </Card>
               </aside>
             </div>
           </TabsContent>
 
-          <TabsContent value="history" className="mt-8">
-            <div className="flex flex-col gap-6">
-              <div className="space-y-1">
-                <h2 className="text-3xl font-extrabold tracking-tight">Archive Repository</h2>
-                <p className="text-muted-foreground text-sm">Chronological log of analyzed visual entities.</p>
+          <TabsContent value="history" className="mt-12 focus-visible:outline-none">
+            <div className="flex flex-col gap-10">
+              <div className="space-y-3 px-2">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="h-[1px] w-8 bg-primary"></span>
+                  <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">Storage Hub</h2>
+                </div>
+                <h1 className="text-5xl font-black tracking-tight leading-tight text-gradient">Archive Repository</h1>
+                <p className="text-muted-foreground text-sm max-w-xl">Deep archives of all successful visual extractions and AI classification logs.</p>
               </div>
 
-              <Card className="rounded-[3rem] border-none shadow-sm bg-white dark:bg-card overflow-hidden">
-                <CardContent className="p-8">
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-                    {history.map((item) => (
+              <Card className="rounded-4xl border-white/10 shadow-xl bg-white/40 dark:bg-card/40 backdrop-blur-3xl overflow-hidden p-8">
+                <CardContent className="p-0">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-8">
+                    {history.map((item, idx) => (
                       <motion.div 
-                        whileHover={{ y: -4 }}
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ delay: idx * 0.05 }}
+                        whileHover={{ y: -8, scale: 1.02 }}
                         key={item.id} 
-                        className="group relative cursor-pointer overflow-hidden rounded-[2rem] border bg-slate-50 dark:bg-secondary/10 aspect-square transition-all hover:shadow-xl hover:shadow-primary/10 hover:border-primary/20"
+                        className="group relative cursor-pointer overflow-hidden rounded-4xl border border-white/10 bg-slate-50 dark:bg-white/5 aspect-square transition-all hover:shadow-2xl hover:shadow-primary/20 hover:border-primary/40 glow-primary"
                         onClick={() => {
                           setCurrentImage(item.imageUrl);
                           setAnalysisResult(item.analysis);
                           setActiveTab("dashboard");
                         }}
                       >
-                        <img src={item.imageUrl} className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-110" alt="History" />
-                        <div className="absolute inset-0 bg-gradient-to-t from-slate-900/90 via-slate-900/20 to-transparent p-5 flex flex-col justify-end translate-y-2 group-hover:translate-y-0 transition-transform">
-                          <p className="text-[10px] font-black text-primary uppercase tracking-widest mb-1">{item.analysis.objects[0]?.category}</p>
-                          <p className="text-sm font-bold text-white line-clamp-1">{item.analysis.objects[0]?.objectName}</p>
-                          <p className="text-[10px] text-white/50 mt-1">{new Date(item.timestamp).toLocaleDateString()}</p>
+                        <img src={item.imageUrl} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-125" alt="History" />
+                        <div className="absolute inset-0 bg-linear-to-t from-slate-900/90 via-slate-900/10 to-transparent p-6 flex flex-col justify-end translate-y-4 group-hover:translate-y-0 transition-transform">
+                          <div className="space-y-1">
+                            <p className="text-[9px] font-black text-primary uppercase tracking-[0.2em] mb-1">{item.analysis.objects[0]?.category}</p>
+                            <p className="text-sm font-black text-white leading-tight">{item.analysis.objects[0]?.objectName}</p>
+                            <div className="flex items-center justify-between mt-3">
+                              <p className="text-[9px] font-bold text-white/50 uppercase tracking-tighter">{new Date(item.timestamp).toLocaleDateString()}</p>
+                              <div className="px-2 py-1 bg-primary/20 rounded-lg border border-primary/30">
+                                <span className="text-[8px] font-black text-primary">{(item.analysis.objects[0]?.confidence * 100).toFixed(0)}%</span>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       </motion.div>
                     ))}
                     {history.length === 0 && (
-                      <div className="col-span-full py-32 text-center opacity-20 flex flex-col items-center gap-4">
-                        <History className="h-16 w-16" />
-                        <p className="font-bold uppercase tracking-[0.2em] text-xs">No records found</p>
+                      <div className="col-span-full py-40 text-center opacity-20 flex flex-col items-center gap-6">
+                        <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center border-4 border-dashed border-muted-foreground/30 animate-spin-slow">
+                          <History className="h-8 w-8" />
+                        </div>
+                        <p className="font-black uppercase tracking-[0.3em] text-[10px]">Matrix Logs: EMPTY</p>
                       </div>
                     )}
                   </div>
@@ -438,48 +563,79 @@ export default function App() {
             </div>
           </TabsContent>
 
-          <TabsContent value="system">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardDescription>AI Throughput</CardDescription>
-                  <CardTitle className="text-2xl">98.4%</CardTitle>
+          <TabsContent value="system" className="mt-12 focus-visible:outline-none">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
+              <Card className="rounded-4xl border-white/10 glass p-8 shadow-xl glow-primary">
+                <CardHeader className="p-0 pb-6">
+                  <CardDescription className="text-[10px] font-black uppercase tracking-[0.3em] text-primary">Neural Confidence</CardDescription>
+                  <CardTitle className="text-4xl font-black tracking-tight mt-2">
+                    {history.length > 0 
+                      ? (history.reduce((acc, curr) => acc + (curr.analysis.objects[0]?.confidence || 0), 0) / history.length * 100).toFixed(1)
+                      : "0"}%
+                  </CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <Progress value={98} className="h-1" />
+                <CardContent className="p-0">
+                  <div className="relative h-2 bg-primary/10 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: history.length > 0 ? '98%' : '0' }}
+                      className="absolute h-full bg-linear-to-r from-primary to-secondary glow-primary"
+                    />
+                  </div>
                 </CardContent>
               </Card>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardDescription>Latency (Avg)</CardDescription>
-                  <CardTitle className="text-2xl">1.2s</CardTitle>
+
+              <Card className="rounded-4xl border-white/10 glass p-8 shadow-xl glow-secondary">
+                <CardHeader className="p-0 pb-6">
+                  <CardDescription className="text-[10px] font-black uppercase tracking-[0.3em] text-secondary">Cache Indexing</CardDescription>
+                  <CardTitle className="text-4xl font-black tracking-tight mt-2">{history.length} <span className="opacity-40 text-xl font-bold">ENTRIES</span></CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <Progress value={30} className="h-1" />
+                <CardContent className="p-0">
+                  <div className="relative h-2 bg-secondary/10 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${Math.min((history.length / 20) * 100, 100)}%` }}
+                      className="absolute h-full bg-linear-to-r from-secondary to-primary glow-secondary"
+                    />
+                  </div>
                 </CardContent>
               </Card>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardDescription>Storage Usage</CardDescription>
-                  <CardTitle className="text-2xl">12GB</CardTitle>
+
+              <Card className="rounded-4xl border-white/10 glass p-8 shadow-xl">
+                <CardHeader className="p-0 pb-6">
+                  <CardDescription className="text-[10px] font-black uppercase tracking-[0.3em] text-muted-foreground">Kernel Uptime</CardDescription>
+                  <CardTitle className="text-4xl font-black tracking-tight mt-2 text-emerald-500">99.9%</CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <Progress value={12} className="h-1" />
+                <CardContent className="p-0">
+                  <div className="relative h-2 bg-emerald-500/10 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: '99%' }}
+                      className="absolute h-full bg-emerald-500"
+                    />
+                  </div>
                 </CardContent>
               </Card>
             </div>
             
-            <Card>
-              <CardHeader>
-                <CardTitle>Admin Terminal</CardTitle>
-                <CardDescription>System logs and AI model configuration</CardDescription>
+            <Card className="rounded-[2.5rem] border-white/10 bg-slate-900 overflow-hidden shadow-2xl relative">
+              <div className="absolute inset-x-0 top-0 h-1 bg-linear-to-r from-primary via-secondary to-primary glow-primary"></div>
+              <CardHeader className="p-10">
+                <CardTitle className="text-white flex items-center gap-3 text-2xl font-black tracking-tight">
+                  <div className="w-3 h-3 bg-emerald-500 rounded-full animate-pulse glow-primary"></div>
+                  Neural Terminal v2.4
+                </CardTitle>
+                <CardDescription className="text-white/40 font-bold uppercase tracking-widest text-[10px]">Real-time system diagnostics and IO throughput.</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="rounded-lg bg-black p-4 font-mono text-xs text-green-500 overflow-hidden">
-                  <p>[INFO] VisionAI Kernel v1.0.4 initialized...</p>
-                  <p>[SUCCESS] Gemini 1.5 Flash stream established.</p>
-                  <p>[INFO] Listening on port 3000...</p>
-                  <p className="animate-pulse">_</p>
+              <CardContent className="px-10 pb-10">
+                <div className="rounded-3xl bg-black/60 p-8 font-mono text-[11px] text-emerald-400 overflow-hidden border border-white/5 min-h-[300px]">
+                  <p className="opacity-40">[{new Date().toISOString()}] SYNCING_DISTRIBUTED_KERNELS...</p>
+                  <p className="text-white mt-1">CORE_STATUS: <span className="text-emerald-500 font-black">HIGH_PERFORMANCE_MODE</span></p>
+                  <p className="mt-1">AI_MODEL: <span className="text-primary font-black">GEMINI_1.5_FLASH_OPT</span></p>
+                  <p className="mt-1">LATENCY: <span className="text-secondary font-black">214ms</span> | JITTER: 2ms</p>
+                  {history.length > 0 && <p className="mt-4 text-emerald-300 animate-pulse font-bold">[DATA] CACHE_SYNC_COMPLETE: {history.length} ENTRIES MAPPED TO VOLATILE_STORAGE</p>}
+                  <p className="mt-8 text-white/20">READY_FOR_NEUTRAL_INPUT...</p>
+                  <p className="animate-pulse mt-2 text-primary">█</p>
                 </div>
               </CardContent>
             </Card>
@@ -487,17 +643,31 @@ export default function App() {
         </Tabs>
       </main>
 
-      <footer className="h-16 px-8 border-t border-slate-100 dark:border-white/5 bg-white dark:bg-background flex items-center justify-between text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-20">
-        <div className="flex gap-8">
-          <span className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
-            TensorFlow Engine v2.4
-          </span>
-          <span className="hidden sm:block">Cloud DB: MongoDB Atlas</span>
+      <footer className="px-12 py-10 border-t border-white/10 glass flex flex-wrap items-center justify-between gap-8 mt-40">
+        <div className="flex flex-wrap gap-12">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">Engine Core</span>
+            <span className="flex items-center gap-2.5 text-xs font-black">
+              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse glow-primary"></span>
+              TensorFlow v2.8-edge
+            </span>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-secondary">Neural Network</span>
+            <span className="text-xs font-black">Gemini Pro Vision Engine</span>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground">Datastore</span>
+            <span className="text-xs font-black">Atlas V-Cloud Partition</span>
+          </div>
         </div>
-        <div className="flex gap-6 items-center">
-          <span className="hover:text-primary transition-colors cursor-pointer">Security Policy</span>
-          <span className="text-slate-900 dark:text-white">© 2026 VisionAI Systems</span>
+        <div className="flex items-center gap-10">
+          <div className="flex gap-8 text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+            <span className="hover:text-primary transition-colors cursor-pointer">Security Protocol</span>
+            <span className="hover:text-secondary transition-colors cursor-pointer">Data Privacy</span>
+          </div>
+          <div className="h-10 w-[1px] bg-white/10 hidden md:block"></div>
+          <span className="text-xs font-black tracking-tight text-foreground/80">© 2026 VisionAI Systems</span>
         </div>
       </footer>
     </div>
