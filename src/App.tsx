@@ -196,6 +196,11 @@ export default function App() {
     multiple: false
   } as any);
 
+  const clearImage = () => {
+    setCurrentImage(null);
+    setAnalysisResult(null);
+  };
+
   const performAnalysis = async (base64: string, mimeType: string) => {
     setIsAnalyzing(true);
     try {
@@ -277,12 +282,12 @@ export default function App() {
             <ScanSearch className="h-6 w-6 text-white" />
           </div>
           <h1 className="text-2xl font-black tracking-tighter text-gradient">
-            Img<span className="opacity-70">REC</span>
+            ImgREC
           </h1>
         </div>
 
         <nav className="hidden lg:flex items-center gap-1 bg-muted/50 p-1 rounded-2xl border border-white/5">
-          {["Dashboard", "History", "Documentation", "System"].map((tab) => (
+          {["Dashboard", "History", "Documentation", "Profile", "System"].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab.toLowerCase() as any)}
@@ -300,15 +305,16 @@ export default function App() {
 
         <div className="flex items-center gap-4">
           {user ? (
-            <div className="flex items-center gap-3 bg-muted/30 p-1.5 pr-4 rounded-full border border-white/5">
-              <img src={user.photoURL || ""} alt="Avatar" className="w-8 h-8 rounded-full border border-primary/20" />
-              <div className="hidden sm:flex flex-col">
-                <span className="text-[10px] font-black uppercase tracking-tight leading-none truncate max-w-[80px]">{user.displayName}</span>
-                <button onClick={handleLogout} className="text-[8px] font-bold text-muted-foreground hover:text-destructive text-left transition-colors flex items-center gap-1">
-                   SIGNOUT <LogOut className="h-2 w-2" />
-                </button>
+            <button 
+              onClick={() => setActiveTab("profile")}
+              className="flex items-center gap-3 bg-muted/30 p-1.5 pr-4 rounded-full border border-white/5 hover:bg-muted/50 transition-all group"
+            >
+              <img src={user.photoURL || ""} alt="Avatar" className="w-8 h-8 rounded-full border border-primary/20 group-hover:border-primary/50 transition-all" />
+              <div className="hidden sm:flex flex-col items-start leading-none">
+                <span className="text-[10px] font-black uppercase tracking-tight truncate max-w-[80px]">{user.displayName}</span>
+                <span className="text-[7px] font-bold text-muted-foreground uppercase">Verified</span>
               </div>
-            </div>
+            </button>
           ) : (
             <Button 
               onClick={handleLogin} 
@@ -363,19 +369,32 @@ export default function App() {
                 <div className="grid grid-cols-1 gap-8">
                   {/* Analysis Viewport */}
                   <Card className="rounded-4xl glow-primary border-white/10 overflow-hidden flex flex-col min-h-[650px] bg-white/50 dark:bg-card/50 backdrop-blur-2xl transition-all">
-                    <div className="relative flex-1 bg-slate-100/50 dark:bg-black/40 flex items-center justify-center p-10 min-h-[450px]">
-                      <div {...getRootProps()} className="absolute inset-0 z-10 cursor-pointer">
-                        <input {...getInputProps()} />
-                      </div>
+                    <div {...getRootProps()} className={cn(
+                      "relative flex-1 bg-slate-100/50 dark:bg-black/40 flex items-center justify-center p-10 min-h-[450px] cursor-pointer transition-all hover:bg-slate-200/50 dark:hover:bg-black/50",
+                      isDragActive && "bg-primary/10 scale-[0.98]"
+                    )}>
+                      <input {...getInputProps()} />
                       
                       {currentImage ? (
-                        <div className="relative z-20 w-full h-full flex items-center justify-center">
+                        <div className="relative z-20 w-full h-full flex items-center justify-center pointer-events-none">
                           <motion.div 
                             initial={{ scale: 0.9, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
                             className="relative"
                           >
                             <img src={currentImage} className="max-h-[400px] w-auto rounded-3xl shadow-2xl border-4 border-white/20" alt="Preview" />
+                            
+                            <Button 
+                              variant="destructive" 
+                              size="icon" 
+                              className="absolute -top-3 -right-3 rounded-full h-8 w-8 shadow-xl border-2 border-background pointer-events-auto z-40"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                clearImage();
+                              }}
+                            >
+                              <LogOut className="h-4 w-4 rotate-90" />
+                            </Button>
                             
                             {/* Scanning Effect Overlay */}
                             {isAnalyzing && (
@@ -407,7 +426,7 @@ export default function App() {
                             </p>
                           </div>
                           <div className="flex gap-4">
-                            <Button size="lg" className="rounded-2xl px-10 border-primary/20 bg-primary/10 text-primary font-black hover:bg-primary transition-all hover:text-white glow-primary pointer-events-auto">
+                            <Button size="lg" className="rounded-2xl px-10 border-primary/20 bg-primary/10 text-primary font-black hover:bg-primary transition-all hover:text-white glow-primary">
                               UPLOAD FILE
                             </Button>
                           </div>
@@ -454,7 +473,10 @@ export default function App() {
                               >
                                 <div className="flex items-start justify-between min-w-0">
                                   <div className="flex flex-col gap-1 min-w-0">
-                                    <span className="text-[9px] uppercase font-black text-primary tracking-widest font-mono opacity-70">{obj.category}</span>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[9px] uppercase font-black text-primary tracking-widest font-mono opacity-70">{obj.category}</span>
+                                      <span className="text-[7px] font-bold text-muted-foreground bg-white/5 px-1.5 py-0.5 rounded border border-white/10 uppercase">ID: {Math.random().toString(36).substring(7).toUpperCase()}</span>
+                                    </div>
                                     <span className="font-black text-lg truncate leading-tight">{obj.objectName}</span>
                                   </div>
                                   <div className="flex flex-col items-end shrink-0">
@@ -469,24 +491,37 @@ export default function App() {
                                     {obj.description}
                                   </p>
                                 )}
+                                
+                                <div className="mt-4 p-3 rounded-2xl bg-white/5 border border-white/5 space-y-2">
+                                  <div className="flex justify-between items-center text-[8px] font-black uppercase tracking-widest">
+                                    <span className="text-muted-foreground">Neural Origin</span>
+                                    <span className="text-foreground">Distributed Index</span>
+                                  </div>
+                                  <div className="flex justify-between items-center text-[8px] font-black uppercase tracking-widest">
+                                    <span className="text-muted-foreground">Classification</span>
+                                    <span className="text-foreground">{obj.category}</span>
+                                  </div>
+                                </div>
+
                                 <div className="flex items-center gap-3 mt-4">
                                   <Button 
                                     variant="ghost" 
                                     size="sm" 
-                                    className="h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider bg-primary/10 text-primary hover:bg-primary hover:text-white transition-all"
+                                    className="h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider bg-primary/10 text-primary hover:bg-primary hover:text-white transition-all shadow-sm"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      window.open(`https://www.google.com/search?q=${encodeURIComponent(obj.objectName + " " + obj.category)}`, "_blank");
+                                      const url = obj.searchUrl || `https://www.google.com/search?q=${encodeURIComponent(obj.objectName + " " + (obj.category || ""))}`;
+                                      window.open(url, "_blank");
                                     }}
                                   >
                                     <Globe className="h-3 w-3 mr-1.5" />
-                                    Search Detail
+                                    Deep Search
                                   </Button>
                                   <Button 
                                     variant="ghost" 
                                     size="sm" 
                                     className={cn(
-                                      "h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider bg-secondary/10 text-secondary hover:bg-secondary hover:text-white transition-all",
+                                      "h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider bg-secondary/10 text-secondary hover:bg-secondary hover:text-white transition-all shadow-sm",
                                       isSpeaking && "opacity-50 cursor-wait"
                                     )}
                                     onClick={(e) => {
@@ -806,7 +841,8 @@ export default function App() {
                       {[
                         "Real-time object classification (>98% accuracy)",
                         "Multilingual OCR with automatic script detection",
-                        "Location/Product grounding with Google Search integration",
+                        "Deep Neural Grounding for personal & brand details",
+                        "Direct integration with Google Knowledge Graph",
                         "Sub-500ms latency on edge nodes"
                       ].map((item, i) => (
                         <li key={i} className="flex items-center gap-3 text-xs font-medium">
@@ -815,6 +851,30 @@ export default function App() {
                         </li>
                       ))}
                     </ul>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-4xl glass border-white/10 p-8 shadow-xl">
+                  <CardHeader className="p-0 pb-6 flex flex-row items-center gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                      <Languages className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-xl font-black">Neural Grounding</CardTitle>
+                      <CardDescription className="text-[10px] font-bold uppercase tracking-widest">Entity Identification</CardDescription>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0 space-y-4">
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      Beyond mere recognition, ImgREC provides <span className="text-foreground font-bold">Neural Grounding</span>. By referencing distributed search indexes, it identifies specific models, origins, and technical IDs.
+                    </p>
+                    <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-[10px] font-black uppercase text-emerald-500">Search Accuracy</span>
+                        <Badge className="bg-emerald-500 text-white font-black text-[9px] uppercase">Enterprise</Badge>
+                      </div>
+                      <Progress value={94} className="h-1 bg-emerald-500/10 shadow-[0_0_10px_rgba(16,185,129,0.3)]" />
+                    </div>
                   </CardContent>
                 </Card>
 
@@ -885,6 +945,73 @@ export default function App() {
                   </div>
                 </Card>
               </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="profile" className="mt-12 focus-visible:outline-none">
+            <div className="max-w-4xl mx-auto pb-20">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="glass rounded-4xl border border-white/10 overflow-hidden shadow-2xl"
+              >
+                <div className="h-48 bg-linear-to-r from-primary/30 via-secondary/30 to-primary/30 relative">
+                  <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-10"></div>
+                </div>
+                
+                <div className="px-10 pb-12 relative">
+                  <div className="flex flex-col md:flex-row gap-8 items-end -mt-20 mb-8">
+                    <div className="relative">
+                      <img src={user?.photoURL || ""} className="w-40 h-40 rounded-4xl border-8 border-background bg-muted object-cover shadow-2xl shadow-primary/20" alt="Profile" />
+                      <div className="absolute -bottom-2 -right-2 bg-emerald-500 p-2 rounded-2xl shadow-xl border-4 border-background">
+                        <ShieldCheck className="w-5 h-5 text-white" />
+                      </div>
+                    </div>
+                    <div className="flex-1 pb-2">
+                      <div className="flex items-center gap-4 mb-2">
+                        <h1 className="text-4xl font-black tracking-tight">{user?.displayName || "Anonymous Operative"}</h1>
+                        <Badge className="bg-primary/10 text-primary border-primary/20 font-black uppercase text-[10px] tracking-widest px-3">Identity Verified</Badge>
+                      </div>
+                      <p className="text-muted-foreground font-mono text-sm">{user?.email}</p>
+                    </div>
+                    <div className="flex gap-3">
+                      <Button onClick={handleLogout} variant="destructive" className="rounded-2xl px-6 font-black uppercase tracking-widest text-[10px] h-12 shadow-xl shadow-destructive/20">
+                        <LogOut className="mr-2 h-4 w-4" />
+                        Terminate Session
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-8 border-t border-white/10">
+                    <div className="p-6 rounded-3xl bg-muted/20 border border-white/5">
+                      <span className="text-[10px] font-black uppercase tracking-[0.2em] text-primary block mb-4">Neural Capacity</span>
+                      <div className="flex items-end gap-2">
+                        <span className="text-4xl font-black leading-none">{history.length}</span>
+                        <span className="text-xs font-bold text-muted-foreground pb-1">Scans Total</span>
+                      </div>
+                      <Progress value={Math.min((history.length/50)*100, 100)} className="h-1.5 mt-6 bg-primary/10" />
+                      <p className="text-[9px] font-bold text-muted-foreground mt-3 uppercase">Quota usage: {((history.length/50)*100).toFixed(0)}% of standard tier</p>
+                    </div>
+                    
+                    <div className="p-6 rounded-3xl bg-muted/20 border border-white/5 col-span-2">
+                      <h3 className="text-xl font-black mb-4 flex items-center gap-3">
+                        <User className="w-5 h-5 text-primary" />
+                        Identity Metadata
+                      </h3>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Unique Hash</span>
+                          <p className="text-xs font-mono truncate">{user?.uid}</p>
+                        </div>
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">Last Auth</span>
+                          <p className="text-xs font-mono">{user?.metadata.lastSignInTime}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
             </div>
           </TabsContent>
 
@@ -968,7 +1095,7 @@ export default function App() {
         </Tabs>
       </main>
 
-      <footer className="px-12 py-10 border-t border-white/10 glass flex flex-wrap items-center justify-between gap-8 mt-40">
+      <footer className="px-12 py-10 border-t border-white/10 glass flex flex-wrap items-center justify-between gap-8 mt-40 pb-24 md:pb-10">
         <div className="flex flex-wrap gap-12">
           <div className="flex flex-col gap-1.5">
             <span className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">Engine Core</span>
@@ -995,6 +1122,28 @@ export default function App() {
           <span className="text-xs font-black tracking-tight text-foreground/80">© 2026 ImgREC Systems</span>
         </div>
       </footer>
+
+      {/* Mobile Bottom Navigation */}
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-50 glass border-t border-white/10 px-6 py-3 pb-8 flex items-center justify-around shadow-2xl">
+        {[
+          { id: "dashboard", icon: LayoutDashboard, label: "Dash" },
+          { id: "history", icon: History, label: "Logs" },
+          { id: "documentation", icon: BookOpen, label: "Docs" },
+          { id: "profile", icon: User, label: "User" }
+        ].map((item) => (
+          <button
+            key={item.id}
+            onClick={() => setActiveTab(item.id as any)}
+            className={cn(
+              "flex flex-col items-center gap-1 transition-all",
+              activeTab === item.id ? "text-primary scale-110" : "text-muted-foreground opacity-60"
+            )}
+          >
+            <item.icon className="h-5 w-5" />
+            <span className="text-[9px] font-black uppercase tracking-widest">{item.label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

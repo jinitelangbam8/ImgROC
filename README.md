@@ -1,6 +1,6 @@
-# VisionAI - Intelligent Object Detection System
+# ImgREC - Intelligent Object Detection System
 
-VisionAI is a professional-grade image recognition and object detection platform powered by Google's Gemini 1.5 Flash model. It provides high-precision analysis, OCR capabilities, and a seamless developer-centric user interface.
+ImgREC is a professional-grade image recognition and object detection platform powered by Google's Gemini 1.5 Flash model. It provides high-precision analysis, OCR capabilities, and a seamless developer-centric user interface.
 
 ## 🚀 Features
 
@@ -60,4 +60,4 @@ metadata.json     # App configuration
 - **Private Keys**: API keys are managed via secure environment variables.
 - **Authentication**: Ready for Firebase Auth integration.
 
-Designed with precision by VisionAI Systems.
+Designed with precision by ImgREC Systems.

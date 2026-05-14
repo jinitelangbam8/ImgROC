@@ -5,6 +5,7 @@ export interface DetectionResult {
   confidence: number;
   description?: string;
   category: string;
+  searchUrl?: string;
   boundingBox?: {
     ymin: number;
     xmin: number;
@@ -27,7 +28,7 @@ export const analyzeImage = async (base64Image: string, mimeType: string = "imag
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: [
-      { text: "Detailed object detection and OCR analysis. Identify people, animals, plants, and products. For identifiable items, suggest where they can be found or bought online. Return JSON only." },
+      { text: "Detailed object detection and OCR analysis. Identify people, animals, plants, and products. For identifiable items, provide specific details like brand, model, 'where' it originates, 'how' it works, and unique 'ID' or serial patterns if possible. Provide a direct search URL for each item that leads to 'personal details' or official specs of the item. Return JSON only." },
       { inlineData: { data: base64Image, mimeType } }
     ],
     config: {
@@ -43,8 +44,9 @@ export const analyzeImage = async (base64Image: string, mimeType: string = "imag
               properties: {
                 objectName: { type: Type.STRING },
                 confidence: { type: Type.NUMBER },
-                description: { type: Type.STRING, description: "Detailed description including where to find more info or where to buy if applicable." },
+                description: { type: Type.STRING, description: "Detailed description including where to find more info, origin, and functional details." },
                 category: { type: Type.STRING },
+                searchUrl: { type: Type.STRING, description: "A Google Search or official specification URL for this specific item." },
                 boundingBox: {
                   type: Type.OBJECT,
                   properties: {
