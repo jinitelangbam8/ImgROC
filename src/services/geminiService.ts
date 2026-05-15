@@ -28,7 +28,7 @@ export const analyzeImage = async (base64Image: string, mimeType: string = "imag
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: [
-      { text: "Detailed object detection and OCR analysis. Identify people, animals, plants, and products. For identifiable items, provide specific details like brand, model, 'where' it originates, 'how' it works, and unique 'ID' or serial patterns if possible. Provide a direct search URL for each item that leads to 'personal details' or official specs of the item. Return JSON only." },
+      { text: "Briefly identify objects and OCR text. Include name, confidence, category, and specific functional detail. JSON only: { objects: [{ objectName, confidence, category, description, searchUrl }], summary, ocrText }" },
       { inlineData: { data: base64Image, mimeType } }
     ],
     config: {
@@ -88,7 +88,7 @@ export const analyzeImage = async (base64Image: string, mimeType: string = "imag
 export const generateSpeech = async (text: string): Promise<string> => {
   const response = await ai.models.generateContent({
     model: "gemini-3.1-flash-tts-preview",
-    contents: [{ parts: [{ text: `Speak this analysis: ${text}` }] }],
+    contents: [{ parts: [{ text: text }] }],
     config: {
       responseModalities: [Modality.AUDIO],
       speechConfig: {

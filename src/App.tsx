@@ -39,6 +39,7 @@ interface FirestoreErrorInfo {
 // Types
 interface ScanHistory {
   id: string;
+  userId?: string;
   timestamp: number;
   imageUrl: string;
   analysis: VisionAnalysis;
@@ -57,6 +58,8 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const [currentlySpeakingText, setCurrentlySpeakingText] = useState<string | null>(null);
+  const [isAudioLoading, setIsAudioLoading] = useState(false);
+  const speechRequestRef = useRef<number>(0);
 
   const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
     const errInfo: FirestoreErrorInfo = {
@@ -85,20 +88,40 @@ export default function App() {
             limit(20)
           );
           const querySnapshot = await getDocs(q);
-          const firestoreHistory: ScanHistory[] = querySnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-          } as ScanHistory));
+          const firestoreHistory: ScanHistory[] = querySnapshot.docs.map(docSnap => {
+            const data = docSnap.data();
+            // Handle Firestore Timestamp to number conversion
+            let timestamp = data.timestamp;
+            if (timestamp && typeof timestamp.toMillis === 'function') {
+              timestamp = timestamp.toMillis();
+            } else if (timestamp && timestamp.seconds) {
+              timestamp = timestamp.seconds * 1000;
+            }
+            
+            return {
+              id: docSnap.id,
+              ...data,
+              timestamp: timestamp || Date.now()
+            } as ScanHistory;
+          });
           setHistory(firestoreHistory);
         } catch (error) {
           console.error("Firestore fetch error:", error);
           // Fallback to local storage if firestore fails
-          const saved = localStorage.getItem("vision_history");
-          if (saved) setHistory(JSON.parse(saved));
+          try {
+            const saved = localStorage.getItem("vision_history");
+            if (saved) setHistory(JSON.parse(saved));
+          } catch (e) {
+            console.error("Local storage parse error:", e);
+          }
         }
       } else {
-        const saved = localStorage.getItem("vision_history");
-        if (saved) setHistory(JSON.parse(saved));
+        try {
+          const saved = localStorage.getItem("vision_history");
+          if (saved) setHistory(JSON.parse(saved));
+        } catch (e) {
+          console.error("Local storage parse error:", e);
+        }
       }
     });
     return () => unsubscribe();
@@ -124,59 +147,77 @@ export default function App() {
 
   // Theme application
   useEffect(() => {
-    const saved = localStorage.getItem("vision_history");
-    if (saved) setHistory(JSON.parse(saved));
-    
     document.documentElement.classList.toggle("dark", isDarkMode);
   }, [isDarkMode]);
 
   const stopSpeaking = () => {
+    speechRequestRef.current += 1; // Invalidate any pending requests
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
     window.speechSynthesis.cancel();
     setIsSpeaking(false);
+    setIsAudioLoading(false);
     setCurrentlySpeakingText(null);
   };
 
   const speakResult = async (text: string) => {
-    if (isSpeaking) {
+    if (isSpeaking || isAudioLoading) {
       const wasSpeakingSameText = currentlySpeakingText === text;
       stopSpeaking();
-      // If we clicked a NEW text while speaking another, we stop the old one and start the new one
       // If we clicked the SAME text, we just stop.
+      // If we clicked a NEW text while speaking/loading another, we stop the old one and start the new one.
       if (wasSpeakingSameText) return;
     }
     
-    setIsSpeaking(true);
+    const requestId = ++speechRequestRef.current;
+    setIsAudioLoading(true);
     setCurrentlySpeakingText(text);
+    
     try {
       const base64Audio = await generateSpeech(text);
+      
+      // Check if this request is still the active one
+      if (speechRequestRef.current !== requestId) return;
+
+      setIsAudioLoading(false);
+      setIsSpeaking(true);
+      
       const audio = new Audio(`data:audio/mp3;base64,${base64Audio}`);
       audioRef.current = audio;
       audio.onended = () => {
-        setIsSpeaking(false);
-        setCurrentlySpeakingText(null);
-        audioRef.current = null;
+        if (speechRequestRef.current === requestId) {
+          setIsSpeaking(false);
+          setCurrentlySpeakingText(null);
+          audioRef.current = null;
+        }
       };
       audio.onerror = () => {
-        setIsSpeaking(false);
-        setCurrentlySpeakingText(null);
-        audioRef.current = null;
-        toast.error("Audio playback error");
+        if (speechRequestRef.current === requestId) {
+          setIsSpeaking(false);
+          setCurrentlySpeakingText(null);
+          audioRef.current = null;
+          toast.error("Audio playback error");
+        }
       };
       await audio.play();
     } catch (error) {
+      if (speechRequestRef.current !== requestId) return;
+      
+      setIsAudioLoading(false);
+      setIsSpeaking(true);
       console.error("AI Speech failed, falling back to Web Speech API", error);
       // Fallback to Web Speech API
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 0.9;
       utterance.pitch = 1.1;
       utterance.onend = () => {
-        setIsSpeaking(false);
-        setCurrentlySpeakingText(null);
-        audioRef.current = null;
+        if (speechRequestRef.current === requestId) {
+          setIsSpeaking(false);
+          setCurrentlySpeakingText(null);
+          audioRef.current = null;
+        }
       };
       window.speechSynthesis.speak(utterance);
     }
@@ -192,19 +233,70 @@ export default function App() {
 
   const deleteHistoryItem = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (!confirm("Are you sure you want to terminate this record from history?")) return;
+    if (!window.confirm("Are you sure you want to terminate this record from history?")) return;
     
     try {
-      if (user) {
-        await deleteDoc(doc(db, "scans", id));
-      }
-      
+      // Optimistic UI update
       const newHistory = history.filter(item => item.id !== id);
       setHistory(newHistory);
       localStorage.setItem("vision_history", JSON.stringify(newHistory));
+
+      if (user && !id.startsWith('temp_')) { 
+        try {
+          await deleteDoc(doc(db, "scans", id));
+        } catch (fsError) {
+          console.error("Firestore sync error:", fsError);
+          toast.error("Cloud record sync failed, but local copy removed.");
+        }
+      }
       toast.success("Record purged from neural logs.");
     } catch (error) {
+      console.error("Delete handler error:", error);
       toast.error("Failed to delete record.");
+    }
+  };
+
+  const processImage = async (file: File) => {
+    setIsAnalyzing(true);
+    setAnalysisResult(null);
+
+    try {
+      // Instant Canvas-based resize
+      const img = new Image();
+      img.src = URL.createObjectURL(file);
+      await new Promise((resolve) => (img.onload = resolve));
+      
+      const canvas = document.createElement("canvas");
+      const MAX_SIZE = 800; // Optimized for performance
+      let { width, height } = img;
+
+      if (width > height) {
+        if (width > MAX_SIZE) {
+          height *= MAX_SIZE / width;
+          width = MAX_SIZE;
+        }
+      } else {
+        if (height > MAX_SIZE) {
+          width *= MAX_SIZE / height;
+          height = MAX_SIZE;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext("2d")?.drawImage(img, 0, 0, width, height);
+      
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+      const base64 = dataUrl.split(",")[1];
+      
+      setCurrentImage(dataUrl);
+      URL.revokeObjectURL(img.src);
+      
+      await performAnalysis(base64, "image/jpeg");
+    } catch (err) {
+      console.error("Processing error:", err);
+      toast.error("Failed to process image");
+      setIsAnalyzing(false);
     }
   };
 
@@ -213,39 +305,32 @@ export default function App() {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       const video = document.createElement("video");
       video.srcObject = stream;
+      await new Promise((resolve) => (video.onloadedmetadata = resolve));
       await video.play();
 
       const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      canvas.getContext("2d")?.drawImage(video, 0, 0);
+      const scale = Math.min(1, 800 / Math.max(video.videoWidth, video.videoHeight));
+      canvas.width = video.videoWidth * scale;
+      canvas.height = video.videoHeight * scale;
+      canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      const base64 = canvas.toDataURL("image/jpeg").split(",")[1];
-      setCurrentImage(canvas.toDataURL("image/jpeg"));
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+      const base64 = dataUrl.split(",")[1];
+      setCurrentImage(dataUrl);
       
-      // Stop tracks
       stream.getTracks().forEach(track => track.stop());
       setShowCamera(false);
       
       await performAnalysis(base64, "image/jpeg");
     } catch (err) {
-      toast.error("Could not access camera");
+      toast.error("Could not access camera feed");
     }
   };
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const base64 = (reader.result as string).split(",")[1];
-      setCurrentImage(reader.result as string);
-      setAnalysisResult(null);
-      await performAnalysis(base64, file.type);
-    };
-    reader.readAsDataURL(file);
-  }, []);
+    if (file) await processImage(file);
+  }, [user, history]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -253,60 +338,46 @@ export default function App() {
     multiple: false
   } as any);
 
-  const clearImage = () => {
+  const clearImage = useCallback(() => {
+    stopSpeaking();
     setCurrentImage(null);
     setAnalysisResult(null);
-  };
+  }, []);
 
   const performAnalysis = async (base64: string, mimeType: string) => {
     setIsAnalyzing(true);
+    const tempId = `temp_${Math.random().toString(36).substring(7)}`;
+    
     try {
-      // Compress image before sending to backend to speed up network transfer
-      const res = await fetch(`data:${mimeType};base64,${base64}`);
-      const blob = await res.blob();
-      const file = new File([blob], "input.jpg", { type: mimeType });
-      
-      const options = {
-        maxSizeMB: 0.5,
-        maxWidthOrHeight: 1280,
-        useWebWorker: true,
-      };
-
-      const compressedFile = await imageCompression(file, options);
-      const reader = new FileReader();
-      const compressedBase64 = await new Promise<string>((resolve) => {
-        reader.onloadend = () => resolve((reader.result as string).split(",")[1]);
-        reader.readAsDataURL(compressedFile);
-      });
-
-      const result = await analyzeImage(compressedBase64, compressedFile.type);
+      const result = await analyzeImage(base64, mimeType);
       setAnalysisResult(result);
       
-      const newHistoryItem: any = {
-        userId: user?.uid || "anonymous",
+      const newHistoryItem: ScanHistory = {
+        id: tempId,
+        userId: user?.uid || "guest",
         timestamp: Date.now(),
-        imageUrl: `data:${compressedFile.type};base64,${compressedBase64}`,
+        imageUrl: `data:${mimeType};base64,${base64}`,
         analysis: result
       };
       
-      if (user) {
-        try {
-          const docRef = await addDoc(collection(db, "scans"), newHistoryItem);
-          newHistoryItem.id = docRef.id;
-        } catch (error) {
-          handleFirestoreError(error, OperationType.CREATE, "scans");
-        }
-      } else {
-        newHistoryItem.id = Math.random().toString(36).substr(2, 9);
-      }
-      
+      // Update local state immediately for instant feedback
       const updatedHistory = [newHistoryItem, ...history.slice(0, 19)];
       setHistory(updatedHistory);
       
       if (!user) {
         localStorage.setItem("vision_history", JSON.stringify(updatedHistory));
+      } else {
+        // Sync to Firestore in background
+        addDoc(collection(db, "scans"), {
+          ...newHistoryItem,
+          timestamp: Timestamp.now()
+        }).then(docRef => {
+          setHistory(prev => prev.map(item => 
+            item.id === tempId ? { ...item, id: docRef.id } : item
+          ));
+        }).catch(err => console.error("Firestore background save failed:", err));
       }
-      
+
       confetti({
         particleCount: 100,
         spread: 70,
@@ -589,19 +660,19 @@ export default function App() {
                                     size="sm" 
                                     className={cn(
                                       "h-8 px-3 rounded-lg text-[10px] font-black uppercase tracking-wider bg-secondary/10 text-secondary hover:bg-secondary hover:text-white transition-all shadow-sm",
-                                      isSpeaking && currentlySpeakingText === obj.description && "bg-destructive/10 text-destructive hover:bg-destructive"
+                                      (isSpeaking || isAudioLoading) && currentlySpeakingText === obj.description && "bg-destructive/10 text-destructive hover:bg-destructive"
                                     )}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       if (obj.description) speakResult(obj.description);
                                     }}
                                   >
-                                    {isSpeaking && currentlySpeakingText === obj.description ? (
-                                      <Octagon className="h-3 w-3 mr-1.5 animate-pulse" />
+                                    {(isSpeaking || isAudioLoading) && currentlySpeakingText === obj.description ? (
+                                      <Octagon className={cn("h-3 w-3 mr-1.5", isAudioLoading ? "animate-spin" : "animate-pulse")} />
                                     ) : (
                                       <Volume2 className="h-3 w-3 mr-1.5" />
                                     )}
-                                    {isSpeaking && currentlySpeakingText === obj.description ? "Stop Info" : "Voice Info"}
+                                    {isAudioLoading && currentlySpeakingText === obj.description ? "Loading..." : ((isSpeaking && currentlySpeakingText === obj.description) ? "Stop Info" : "Voice Info")}
                                   </Button>
                                 </div>
                               </motion.div>
@@ -658,16 +729,16 @@ export default function App() {
                                 size="sm" 
                                 className={cn(
                                   "h-6 px-2 rounded-lg text-[8px] font-black uppercase tracking-wider bg-primary/20 text-primary hover:bg-primary hover:text-white transition-all",
-                                  isSpeaking && currentlySpeakingText === analysisResult.summary && "bg-destructive/20 text-destructive hover:bg-destructive"
+                                  (isSpeaking || isAudioLoading) && currentlySpeakingText === analysisResult.summary && "bg-destructive/20 text-destructive hover:bg-destructive"
                                 )}
                                 onClick={() => speakResult(analysisResult.summary)}
                               >
-                                {isSpeaking && currentlySpeakingText === analysisResult.summary ? (
-                                  <Octagon className="h-2.5 w-2.5 mr-1 animate-pulse" />
+                                {(isSpeaking || isAudioLoading) && currentlySpeakingText === analysisResult.summary ? (
+                                  <Octagon className={cn("h-2.5 w-2.5 mr-1", isAudioLoading ? "animate-spin" : "animate-pulse")} />
                                 ) : (
                                   <Volume2 className="h-2.5 w-2.5 mr-1" />
                                 )}
-                                {isSpeaking && currentlySpeakingText === analysisResult.summary ? "Stop" : "Listen"}
+                                {isAudioLoading && currentlySpeakingText === analysisResult.summary ? "..." : ((isSpeaking && currentlySpeakingText === analysisResult.summary) ? "Stop" : "Listen")}
                               </Button>
                             </h4>
                             <p className="text-sm leading-relaxed text-foreground font-medium">{analysisResult.summary}</p>
