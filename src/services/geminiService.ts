@@ -28,7 +28,7 @@ export const analyzeImage = async (base64Image: string, mimeType: string = "imag
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: [
-      { text: "Briefly identify objects and OCR text. Include name, confidence, category, and specific functional detail. JSON only: { objects: [{ objectName, confidence, category, description, searchUrl }], summary, ocrText }" },
+      { text: "Perform rapid, high-precision analysis. Identify objects with specific details (color, material, brand). Provide a technical summary and OCR text. JSON only: { objects: [{ objectName, confidence, category, description, searchUrl }], summary, ocrText }" },
       { inlineData: { data: base64Image, mimeType } }
     ],
     config: {
@@ -83,6 +83,24 @@ export const analyzeImage = async (base64Image: string, mimeType: string = "imag
   }
 
   return analysis;
+};
+
+export const translateText = async (text: string, targetLanguage: string): Promise<string> => {
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: [
+      { 
+        parts: [{ 
+          text: `Detect the source language and translate the following text into ${targetLanguage}. 
+          Return ONLY the translated text. Do not include original text, preamble, or formatting.
+          
+          Text to translate:
+          ${text}` 
+        }] 
+      }
+    ],
+  });
+  return response.text.trim();
 };
 
 export const generateSpeech = async (text: string): Promise<string> => {

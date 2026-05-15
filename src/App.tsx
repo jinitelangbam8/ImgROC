@@ -12,7 +12,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import imageCompression from "browser-image-compression";
 import { Toaster, toast } from "sonner";
-import { analyzeImage, VisionAnalysis, generateSpeech } from "@/services/geminiService";
+import { analyzeImage, VisionAnalysis, generateSpeech, translateText } from "@/services/geminiService";
 import { cn } from "@/lib/utils";
 import confetti from "canvas-confetti";
 import { auth, signInWithGoogle, logout, db } from "@/lib/firebase";
@@ -55,6 +55,51 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showCamera, setShowCamera] = useState(false);
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [contextualSearch, setContextualSearch] = useState("");
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translatedTexts, setTranslatedTexts] = useState<{[key: string]: string}>({});
+  const [translationSource, setTranslationSource] = useState<'ocr' | 'summary'>('ocr');
+
+  const LANGUAGES = [
+    { name: "Arabic", flag: "🇸🇦", code: "ar" },
+    { name: "Bengali", flag: "🇧🇩", code: "bn" },
+    { name: "Chinese (Simplified)", flag: "🇨🇳", code: "zh-CN" },
+    { name: "Chinese (Traditional)", flag: "🇹🇼", code: "zh-TW" },
+    { name: "Czech", flag: "🇨🇿", code: "cs" },
+    { name: "Danish", flag: "🇩🇰", code: "da" },
+    { name: "Dutch", flag: "🇳🇱", code: "nl" },
+    { name: "English", flag: "🇺🇸", code: "en" },
+    { name: "Finnish", flag: "🇫🇮", code: "fi" },
+    { name: "French", flag: "🇫🇷", code: "fr" },
+    { name: "German", flag: "🇩🇪", code: "de" },
+    { name: "Greek", flag: "🇬🇷", code: "el" },
+    { name: "Hindi", flag: "🇮🇳", code: "hi" },
+    { name: "Hungarian", flag: "🇭🇺", code: "hu" },
+    { name: "Indonesian", flag: "🇮🇩", code: "id" },
+    { name: "Italian", flag: "🇮🇹", code: "it" },
+    { name: "Japanese", flag: "🇯🇵", code: "ja" },
+    { name: "Korean", flag: "🇰🇷", code: "ko" },
+    { name: "Malay", flag: "🇲🇾", code: "ms" },
+    { name: "Norwegian", flag: "🇳🇴", code: "no" },
+    { name: "Persian", flag: "🇮🇷", code: "fa" },
+    { name: "Polish", flag: "🇵🇱", code: "pl" },
+    { name: "Portuguese", flag: "🇵🇹", code: "pt" },
+    { name: "Punjabi", flag: "🇮🇳", code: "pa" },
+    { name: "Romanian", flag: "🇷🇴", code: "ro" },
+    { name: "Russian", flag: "🇷🇺", code: "ru" },
+    { name: "Spanish", flag: "🇪🇸", code: "es" },
+    { name: "Swahili", flag: "🇰🇪", code: "sw" },
+    { name: "Swedish", flag: "🇸🇪", code: "sv" },
+    { name: "Tagalog", flag: "🇵🇭", code: "tl" },
+    { name: "Tamil", flag: "🇮🇳", code: "ta" },
+    { name: "Telugu", flag: "🇮🇳", code: "te" },
+    { name: "Thai", flag: "🇹🇭", code: "th" },
+    { name: "Turkish", flag: "🇹🇷", code: "tr" },
+    { name: "Ukrainian", flag: "🇺🇦", code: "uk" },
+    { name: "Urdu", flag: "🇵🇰", code: "ur" },
+    { name: "Vietnamese", flag: "🇻🇳", code: "vi" }
+  ];
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const [currentlySpeakingText, setCurrentlySpeakingText] = useState<string | null>(null);
@@ -236,20 +281,24 @@ export default function App() {
     if (!window.confirm("Are you sure you want to terminate this record from history?")) return;
     
     try {
-      // Optimistic UI update
-      const newHistory = history.filter(item => item.id !== id);
-      setHistory(newHistory);
-      localStorage.setItem("vision_history", JSON.stringify(newHistory));
+      // Optimistic UI update using functional state
+      setHistory(prev => {
+        const newHistory = prev.filter(item => item.id !== id);
+        localStorage.setItem("vision_history", JSON.stringify(newHistory));
+        return newHistory;
+      });
 
       if (user && !id.startsWith('temp_')) { 
         try {
           await deleteDoc(doc(db, "scans", id));
+          toast.success("Cloud record purged.");
         } catch (fsError) {
           console.error("Firestore sync error:", fsError);
-          toast.error("Cloud record sync failed, but local copy removed.");
+          toast.error("Cloud sync failed, but local copy removed.");
         }
+      } else {
+        toast.success("Local record purged.");
       }
-      toast.success("Record purged from neural logs.");
     } catch (error) {
       console.error("Delete handler error:", error);
       toast.error("Failed to delete record.");
@@ -267,7 +316,7 @@ export default function App() {
       await new Promise((resolve) => (img.onload = resolve));
       
       const canvas = document.createElement("canvas");
-      const MAX_SIZE = 800; // Optimized for performance
+      const MAX_SIZE = 640; // Reduced for faster processing
       let { width, height } = img;
 
       if (width > height) {
@@ -286,7 +335,7 @@ export default function App() {
       canvas.height = height;
       canvas.getContext("2d")?.drawImage(img, 0, 0, width, height);
       
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
       const base64 = dataUrl.split(",")[1];
       
       setCurrentImage(dataUrl);
@@ -309,12 +358,12 @@ export default function App() {
       await video.play();
 
       const canvas = document.createElement("canvas");
-      const scale = Math.min(1, 800 / Math.max(video.videoWidth, video.videoHeight));
+      const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
       canvas.width = video.videoWidth * scale;
       canvas.height = video.videoHeight * scale;
       canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
       const base64 = dataUrl.split(",")[1];
       setCurrentImage(dataUrl);
       
@@ -342,10 +391,38 @@ export default function App() {
     stopSpeaking();
     setCurrentImage(null);
     setAnalysisResult(null);
+    setTranslatedTexts({});
+    setContextualSearch("");
   }, []);
+
+  const handleTranslate = async (language: string) => {
+    const textToTranslate = translationSource === 'ocr' ? analysisResult?.ocrText : analysisResult?.summary;
+    if (!textToTranslate) return;
+    
+    setIsTranslating(true);
+    try {
+      const result = await translateText(textToTranslate, language);
+      setTranslatedTexts(prev => ({ ...prev, [language]: result }));
+      toast.success(`Translated to ${language}`);
+    } catch (err) {
+      console.error("Translation error:", err);
+      toast.error(`Failed to translate to ${language}`);
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  const removeTranslation = (lang: string) => {
+    setTranslatedTexts(prev => {
+      const next = { ...prev };
+      delete next[lang];
+      return next;
+    });
+  };
 
   const performAnalysis = async (base64: string, mimeType: string) => {
     setIsAnalyzing(true);
+    setTranslatedTexts({});
     const tempId = `temp_${Math.random().toString(36).substring(7)}`;
     
     try {
@@ -367,9 +444,10 @@ export default function App() {
       if (!user) {
         localStorage.setItem("vision_history", JSON.stringify(updatedHistory));
       } else {
-        // Sync to Firestore in background
+        // Sync to Firestore in background without including the temp ID in the document body
+        const { id, ...dataToSave } = newHistoryItem;
         addDoc(collection(db, "scans"), {
-          ...newHistoryItem,
+          ...dataToSave,
           timestamp: Timestamp.now()
         }).then(docRef => {
           setHistory(prev => prev.map(item => 
@@ -600,6 +678,55 @@ export default function App() {
                       
                       <ScrollArea className="h-[400px] pr-4">
                         <div className="flex flex-col gap-6">
+                          {analysisResult && (
+                            <motion.div 
+                              initial={{ opacity: 0, y: -10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="p-6 rounded-3xl bg-secondary/5 border border-secondary/20 relative group"
+                            >
+                              <div className="flex items-center justify-between mb-4">
+                                <div className="flex items-center gap-3">
+                                  <div className="p-2 rounded-xl bg-secondary/10">
+                                    <Globe className="h-4 w-4 text-secondary" />
+                                  </div>
+                                  <div>
+                                    <h4 className="text-[10px] font-black uppercase tracking-widest text-secondary">Neural Context Search</h4>
+                                    <p className="text-[8px] font-bold text-muted-foreground uppercase">Query web intelligence via image context</p>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <input 
+                                  type="text" 
+                                  placeholder="INQUIRE ABOUT THIS IMAGE..."
+                                  value={contextualSearch}
+                                  onChange={(e) => setContextualSearch(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && contextualSearch.trim()) {
+                                      const query = `${contextualSearch} ${analysisResult.objects[0]?.objectName || ''}`;
+                                      window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
+                                    }
+                                  }}
+                                  className="flex-1 bg-white/40 dark:bg-black/20 border border-white/10 rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest focus:outline-none focus:border-secondary/50 transition-all placeholder:text-muted-foreground/30"
+                                />
+                                <Button 
+                                  size="sm" 
+                                  className="rounded-xl px-4 bg-secondary hover:bg-secondary/90 text-white font-black uppercase text-[10px] tracking-widest shadow-lg shadow-secondary/20 h-10"
+                                  onClick={() => {
+                                    if (contextualSearch.trim()) {
+                                      const query = `${contextualSearch} ${analysisResult.objects[0]?.objectName || ''}`;
+                                      window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
+                                    } else {
+                                      toast.warning("Enter a search parameter.");
+                                    }
+                                  }}
+                                >
+                                  EXECUTE
+                                </Button>
+                              </div>
+                            </motion.div>
+                          )}
+
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {analysisResult?.objects.map((obj, i) => (
                               <motion.div 
@@ -825,16 +952,153 @@ export default function App() {
                 )}
               </AnimatePresence>
 
-              {/* Right Column: History Sidebar */}
+              {/* Right Column: Console Sidebar */}
               <aside className="w-full lg:w-[350px] flex flex-col gap-6">
+                {(analysisResult?.ocrText || analysisResult?.summary) && (
+                  <Card className="rounded-3xl border-primary/20 bg-primary/5 dark:bg-primary/10 overflow-hidden shadow-xl glow-primary">
+                    <CardHeader className="p-5 pb-3">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-xl bg-primary/20">
+                          <Languages className="h-4 w-4 text-primary" />
+                        </div>
+                        <div>
+                          <CardTitle className="text-xs font-black uppercase tracking-widest text-primary">Linguistic Engine</CardTitle>
+                          <CardDescription className="text-[8px] font-bold uppercase opacity-60">Global Decryption Console</CardDescription>
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="p-5 pt-0 space-y-4">
+                      <div className="flex items-center gap-1 bg-white/40 dark:bg-black/20 p-1 rounded-xl border border-white/10">
+                        <Button 
+                          size="sm" 
+                          variant={translationSource === 'ocr' ? 'default' : 'ghost'}
+                          className={cn(
+                            "flex-1 h-7 rounded-lg text-[8px] font-black uppercase tracking-widest px-2",
+                            !analysisResult?.ocrText && "opacity-30 pointer-events-none"
+                          )}
+                          onClick={() => setTranslationSource('ocr')}
+                        >
+                          OCR
+                        </Button>
+                        <Button 
+                          size="sm" 
+                          variant={translationSource === 'summary' ? 'default' : 'ghost'}
+                          className="flex-1 h-7 rounded-lg text-[8px] font-black uppercase tracking-widest px-2"
+                          onClick={() => setTranslationSource('summary')}
+                        >
+                          Summary
+                        </Button>
+                      </div>
+
+                      <div className="relative group">
+                        <Languages className="absolute left-3 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground group-focus-within:text-primary transition-colors" />
+                        <select 
+                          className="w-full h-10 pl-9 pr-4 rounded-xl bg-white/40 dark:bg-black/20 border border-white/10 text-[10px] font-black uppercase tracking-widest focus:outline-none focus:border-primary/50 cursor-pointer appearance-none"
+                          onChange={(e) => {
+                            if (e.target.value) handleTranslate(e.target.value);
+                            e.target.value = "";
+                          }}
+                        >
+                          <option value="">SELECT LANGUAGE...</option>
+                          {LANGUAGES.map(lang => (
+                            <option key={lang.name} value={lang.name} className="bg-background">
+                              {lang.flag} {lang.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <ScrollArea className="max-h-[300px] pr-2">
+                        <div className="space-y-3">
+                          <AnimatePresence mode="popLayout text-xs">
+                            {(Object.entries(translatedTexts) as [string, string][]).reverse().map(([lang, text]) => {
+                              const langInfo = LANGUAGES.find(l => l.name === lang);
+                              return (
+                                <motion.div 
+                                  key={lang}
+                                  initial={{ opacity: 0, x: 20 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  exit={{ opacity: 0, scale: 0.95 }}
+                                  className="bg-white/40 dark:bg-white/5 p-3 rounded-2xl border border-white/10 group relative"
+                                >
+                                  <div className="flex items-center justify-between mb-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs">{langInfo?.flag}</span>
+                                      <span className="text-[9px] font-black text-primary uppercase tracking-tighter">{lang}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        className="h-5 w-5 rounded-lg hover:bg-primary/20"
+                                        onClick={() => speakResult(text)}
+                                      >
+                                        <Volume2 className="h-2.5 w-2.5 text-primary" />
+                                      </Button>
+                                      <Button 
+                                        variant="ghost" 
+                                        size="icon" 
+                                        className="h-5 w-5 rounded-lg hover:bg-destructive/20 text-destructive/40 hover:text-destructive"
+                                        onClick={() => removeTranslation(lang)}
+                                      >
+                                        <X className="h-2.5 w-2.5" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                  <p className="text-[11px] font-bold leading-relaxed">{text}</p>
+                                </motion.div>
+                              );
+                            })}
+                          </AnimatePresence>
+
+                          {isTranslating && (
+                            <motion.div 
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              className="flex flex-col items-center justify-center p-6 gap-2 border border-dashed border-primary/30 rounded-2xl"
+                            >
+                              <RotateCcw className="h-4 w-4 text-primary animate-spin" />
+                              <span className="text-[8px] font-black uppercase tracking-widest text-primary animate-pulse text-center">Establishing Linguistic Link...</span>
+                            </motion.div>
+                          )}
+
+                          {Object.keys(translatedTexts).length === 0 && !isTranslating && (
+                            <div className="p-8 text-center opacity-20 flex flex-col items-center gap-2">
+                              <Languages className="h-5 w-5" />
+                              <p className="text-[8px] font-black uppercase tracking-widest">No Active Translations</p>
+                            </div>
+                          )}
+                        </div>
+                      </ScrollArea>
+                    </CardContent>
+                  </Card>
+                )}
+
                 <div className="flex items-center justify-between px-2">
                   <h3 className="font-bold text-foreground">Neural Logs</h3>
                   <button onClick={() => setActiveTab("history")} className="text-primary text-[10px] font-bold uppercase tracking-wider hover:underline">View Stream</button>
                 </div>
 
+                <div className="relative group px-1">
+                  <ScanSearch className="absolute left-4 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground group-focus-within:text-primary transition-colors" />
+                  <input 
+                    type="text" 
+                    placeholder="SEARCH PROTOCOL..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full bg-white/40 dark:bg-white/5 border border-white/10 rounded-xl py-2 pl-9 pr-4 text-[10px] font-black uppercase tracking-widest focus:outline-none focus:border-primary/50 transition-all placeholder:text-muted-foreground/40"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-4 overflow-y-auto max-h-[500px] lg:max-h-none pr-2">
                   <AnimatePresence mode="popLayout">
-                    {history.slice(0, 5).map((item, idx) => (
+                    {history
+                      .filter(item => 
+                        item.analysis.objects.some(obj => obj.objectName.toLowerCase().includes(searchQuery.toLowerCase())) ||
+                        item.analysis.summary.toLowerCase().includes(searchQuery.toLowerCase())
+                      )
+                      .slice(0, 8)
+                      .map((item, idx) => (
                       <motion.div 
                         initial={{ opacity: 0, x: 20 }}
                         animate={{ opacity: 1, x: 0 }}
@@ -857,9 +1121,9 @@ export default function App() {
                                 <span className="text-[10px] font-black text-primary font-mono">{(item.analysis.objects[0]?.confidence * 100).toFixed(0)}%</span>
                                 <button 
                                   onClick={(e) => deleteHistoryItem(e, item.id)}
-                                  className="p-1 hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
+                                  className="p-1.5 hover:text-destructive transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100 text-muted-foreground/60 hover:text-destructive"
                                 >
-                                  <Trash2 className="h-3 w-3" />
+                                  <Trash2 className="h-3.5 w-3.5" />
                                 </button>
                               </div>
                             </div>
@@ -921,9 +1185,34 @@ export default function App() {
               </div>
 
               <Card className="rounded-4xl border-white/10 shadow-xl bg-white/40 dark:bg-card/40 backdrop-blur-3xl overflow-hidden p-8">
+                <CardHeader className="px-0 pt-0 pb-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                  <div className="space-y-1">
+                    <CardTitle className="text-xl font-black uppercase tracking-widest text-primary flex items-center gap-3">
+                      <History className="h-5 w-5" />
+                      Data Partition
+                    </CardTitle>
+                    <CardDescription className="text-[10px] font-bold opacity-60">Total mapped entries: {history.length}</CardDescription>
+                  </div>
+                  <div className="relative group w-full md:w-80">
+                    <ScanSearch className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
+                    <input 
+                      type="text" 
+                      placeholder="SEARCH DATASET..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full bg-white/40 dark:bg-white/5 border border-white/10 rounded-2xl py-3 pl-11 pr-5 text-xs font-black uppercase tracking-[0.2em] focus:outline-none focus:border-primary/50 transition-all placeholder:text-muted-foreground/30 shadow-inner"
+                    />
+                  </div>
+                </CardHeader>
                 <CardContent className="p-0">
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-8">
-                    {history.map((item, idx) => (
+                    {history
+                      .filter(item => 
+                        item.analysis.objects.some(obj => obj.objectName.toLowerCase().includes(searchQuery.toLowerCase())) ||
+                        item.analysis.summary.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        item.analysis.ocrText?.toLowerCase().includes(searchQuery.toLowerCase())
+                      )
+                      .map((item, idx) => (
                       <motion.div 
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: 1, scale: 1 }}
@@ -937,7 +1226,7 @@ export default function App() {
                         <div className="absolute inset-0 bg-linear-to-t from-slate-900/90 via-slate-900/10 to-transparent p-6 flex flex-col justify-end translate-y-4 group-hover:translate-y-0 transition-transform">
                           <button 
                             onClick={(e) => deleteHistoryItem(e, item.id)}
-                            className="absolute top-4 right-4 p-2 bg-destructive/10 hover:bg-destructive text-destructive hover:text-white rounded-xl backdrop-blur-md border border-destructive/20 opacity-0 group-hover:opacity-100 transition-all z-20"
+                            className="absolute top-4 right-4 p-2.5 bg-destructive/10 hover:bg-destructive text-destructive hover:text-white rounded-xl backdrop-blur-md border border-destructive/20 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-all z-20"
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
