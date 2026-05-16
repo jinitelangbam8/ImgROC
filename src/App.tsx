@@ -18,6 +18,7 @@ import confetti from "canvas-confetti";
 import { auth, signInWithGoogle, logout, db } from "@/lib/firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { collection, query, where, getDocs, addDoc, orderBy, limit, Timestamp, deleteDoc, doc } from "firebase/firestore";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 // Error reporting enum
 enum OperationType {
@@ -474,6 +475,7 @@ export default function App() {
 
   return (
     <div className={`min-h-screen bg-background text-foreground selection:bg-primary/30 selection:text-primary transition-colors duration-500`}>
+      <SpeedInsights />
       <Toaster position="top-right" richColors />
       
       {/* Background Decorative Elements */}
